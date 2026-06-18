@@ -45,6 +45,7 @@ def build_start_message():
         "Commands:\n"
         "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
         "• /risky - Demo risky setup only\n"
+        "• /chatid - Show current chat/topic ID\n"
         "• /help - Show help menu\n\n"
         "Find The Edge."
     )
@@ -57,6 +58,7 @@ def build_help_message():
         "• /start - Bot intro\n"
         "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
         "• /risky - Demo risky setup only\n"
+        "• /chatid - Show current chat/topic ID\n"
         "• /help - Show this menu\n\n"
         "<b>Coming Later</b>\n"
         "• Real fixture scanner\n"
@@ -139,6 +141,15 @@ def build_risky_message():
     )
 
 
+def build_chatid_message(chat_id, thread_id):
+    return (
+        "📖 <b>THE BLACK BOOK CHAT ID</b>\n\n"
+        f"Chat ID: <code>{chat_id}</code>\n"
+        f"Topic ID: <code>{thread_id}</code>\n\n"
+        "Use these IDs later for routing sport alerts into the correct topic."
+    )
+
+
 @app.route("/", methods=["GET"])
 def home():
     return "The Black Book Bot is running", 200
@@ -165,6 +176,10 @@ def set_webhook():
         return jsonify({"ok": False, "error": "Missing TELEGRAM_BOT_TOKEN or BOT_TOKEN"}), 500
 
     webhook_url = request.host_url.rstrip("/") + "/telegram-webhook"
+
+    # Telegram requires HTTPS for webhooks. Render sometimes passes http internally,
+    # so force the public webhook URL to https.
+    webhook_url = webhook_url.replace("http://", "https://", 1)
 
     response = requests.post(
         api_url("setWebhook"),
@@ -213,12 +228,19 @@ def telegram_webhook():
 
         if lower_text.startswith("/start"):
             reply = build_start_message()
+
         elif lower_text.startswith("/help"):
             reply = build_help_message()
+
         elif lower_text.startswith("/top"):
             reply = build_top_message()
+
         elif lower_text.startswith("/risky"):
             reply = build_risky_message()
+
+        elif lower_text.startswith("/chatid"):
+            reply = build_chatid_message(chat_id, thread_id)
+
         else:
             return jsonify({"ok": True, "ignored": "not_a_command"}), 200
 
