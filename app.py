@@ -18,7 +18,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.2-football-scanner"
+VERSION = "the-black-book-v0.2.1-football-scanner"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -43,7 +43,7 @@ FOOTBALL_SPORT_KEYS = [
 ]
 
 ODDS_REGION = os.environ.get("ODDS_REGION", "uk")
-ODDS_MARKETS = os.environ.get("ODDS_MARKETS", "h2h,totals,btts")
+ODDS_MARKETS = os.environ.get("ODDS_MARKETS", "h2h")
 
 
 # =========================
@@ -209,6 +209,28 @@ def get_available_soccer_sports():
     return soccer
 
 
+def clean_api_error(error_text):
+    """Keep Telegram errors readable and never expose API keys in chat."""
+    text = str(error_text)
+
+    if "apiKey=" in text:
+        text = text.split("apiKey=")[0] + "apiKey=HIDDEN"
+
+    if "422 Client Error" in text:
+        return "Market not supported for this league with current settings"
+
+    if "401 Client Error" in text:
+        return "API key issue - check THE_ODDS_API_KEY"
+
+    if "429 Client Error" in text:
+        return "Odds API credit/rate limit hit"
+
+    if len(text) > 140:
+        text = text[:140] + "..."
+
+    return text
+
+
 def fetch_football_odds():
     all_events = []
     errors = []
@@ -233,7 +255,7 @@ def fetch_football_odds():
                 all_events.append(event)
 
         except Exception as e:
-            errors.append(f"{sport_key}: {str(e)}")
+            errors.append(f"{sport_key}: {clean_api_error(e)}")
 
     return all_events, errors
 
@@ -640,7 +662,7 @@ def build_football_setup_message(scored):
     return (
         "⚽ <b>THE BLACK BOOK FOOTBALL</b>\n\n"
         "🔥 <b>SETUP FOUND</b>\n\n"
-        f"Competition Key: <b>{sport_key}</b>\n"
+        f"Competition: <code>{sport_key}</code>\n"
         f"Match: <b>{home} vs {away}</b>\n"
         f"Kickoff: <b>{kickoff}</b>\n\n"
         f"Setup Score: <b>{scored['score']}/100</b>\n"
@@ -707,19 +729,24 @@ def run_football_scan(post_to_topic=True):
 
     summary = (
         "📖 <b>THE BLACK BOOK SCAN COMPLETE</b>\n\n"
-        f"⚽ Football fixtures scanned: <b>{scanned_count}</b>\n"
-        f"⚽ Qualifying setups found: <b>{len(setups)}</b>\n"
-        f"⚽ Posts sent: <b>{posts_sent}</b>\n\n"
+        f"⚽ Fixtures scanned: <b>{scanned_count}</b>\n"
+        f"🔥 Setups found: <b>{len(setups)}</b>\n"
+        f"📤 Posts sent: <b>{posts_sent}</b>\n"
+        f"🎯 Market mode: <b>{ODDS_MARKETS}</b>\n\n"
     )
 
     if not setups:
         summary += "No qualifying football setups found.\n"
 
     if errors:
-        summary += "\n<b>API notes:</b>\n" + "\n".join([f"• {e}" for e in errors[:5]]) + "\n"
+        summary += "\n<b>API notes:</b>\n"
+        for err in errors[:4]:
+            summary += f"• {err}\n"
 
     if send_errors:
-        summary += "\n<b>Telegram send errors:</b>\n" + "\n".join(send_errors[:3]) + "\n"
+        summary += "\n<b>Telegram send errors:</b>\n"
+        for err in send_errors[:2]:
+            summary += f"• {clean_api_error(err)}\n"
 
     return {
         "setups": setups,
@@ -858,20 +885,56 @@ def build_sports_message():
 
     if not soccer:
         return (
-            "⚽ <b>AVAILABLE SOCCER SPORTS</b>\n\n"
+            "⚽ <b>FOOTBALL LEAGUES</b>\n\n"
             "Could not load soccer sport keys from The Odds API.\n"
             "Check THE_ODDS_API_KEY or try again later."
         )
 
-    lines = ["⚽ <b>AVAILABLE SOCCER SPORTS</b>\n"]
+    preferred = [
+        "soccer_epl",
+        "soccer_fifa_world_cup",
+        "soccer_italy_serie_a",
+        "soccer_germany_dfb_pokal",
+        "soccer_sweden_allsvenskan",
+        "soccer_norway_eliteserien",
+        "soccer_league_of_ireland",
+        "soccer_conmebol_copa_libertadores",
+        "soccer_conmebol_copa_sudamericana",
+    ]
 
-    for item in soccer[:40]:
-        lines.append(f"• <code>{item['key']}</code> — {item['title']}")
+    by_key = {item["key"]: item for item in soccer}
+    enabled = [key for key in FOOTBALL_SPORT_KEYS if key in by_key]
 
-    lines.append(
-        "\nTo control which competitions are scanned, set this Render variable:\n"
-        "<code>FOOTBALL_SPORT_KEYS</code>"
-    )
+    lines = [
+        "⚽ <b>FOOTBALL LEAGUES</b>",
+        "",
+        "<b>Currently scanning:</b>",
+    ]
+
+    if enabled:
+        for key in enabled:
+            item = by_key[key]
+            lines.append(f"✅ <b>{item['title']}</b>\n<code>{key}</code>")
+    else:
+        lines.append("No active scanned leagues matched the API list.")
+
+    lines.append("")
+    lines.append("<b>Recommended available keys:</b>")
+
+    count = 0
+    for key in preferred:
+        if key in by_key:
+            item = by_key[key]
+            lines.append(f"• <b>{item['title']}</b>\n<code>{key}</code>")
+            count += 1
+
+    if count == 0:
+        for item in soccer[:8]:
+            lines.append(f"• <b>{item['title']}</b>\n<code>{item['key']}</code>")
+
+    lines.append("")
+    lines.append("Render variable:")
+    lines.append("<code>FOOTBALL_SPORT_KEYS</code>")
 
     return "\n".join(lines)
 
