@@ -6,8 +6,8 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.2.3
-# Today Fixture Accumulator Builder
+# THE BLACK BOOK v0.2.4
+# Football Setup Logic + Cleaner Diagnostics
 # =========================
 
 BOT_TOKEN = (
@@ -18,7 +18,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.2.3"
+VERSION = "the-black-book-v0.2.4"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -217,6 +217,25 @@ def clean_api_error(error_text):
     if "401 Client Error" in text:
         return "API key issue"
     return text[:160]
+
+def short_leg_name(leg):
+    leg = str(leg)
+    leg = leg.replace(" To Win", " Win")
+    leg = leg.replace("Over 2.5 Goals", "Over 2.5")
+    leg = leg.replace("Under 2.5 Goals", "Under 2.5")
+    leg = leg.replace("BTTS Yes", "BTTS")
+    leg = leg.replace("BTTS No", "BTTS No")
+    return leg
+
+
+def compact_legs(legs):
+    return " + ".join(short_leg_name(leg) for leg in legs)
+
+
+def setup_status(score):
+    if score >= MIN_FOOTBALL_SCORE:
+        return "✅ POST"
+    return "❌ BELOW THRESHOLD"
 
 
 # =========================
@@ -535,24 +554,13 @@ def build_bet_section(label, stake, odds, legs, purpose, bookmaker=None, include
     if not include or odds is None or not legs:
         return ""
 
-    lines = [
-        f"{label}",
-        "",
-    ]
-
-    for index, leg in enumerate(legs):
-        if index > 0:
-            lines.append("+")
-        lines.append(leg)
-
-    lines.extend([
-        "",
-        f"Odds: <b>{format_odds(odds)}</b>",
-        f"Stake: <b>{money(stake)}</b>",
-        f"Return: <b>{money(float(stake) * float(odds))}</b>",
-    ])
-
-    return "\n".join(lines)
+    return (
+        f"{label}\n"
+        f"{compact_legs(legs)}\n\n"
+        f"Odds: <b>{format_odds(odds)}</b>\n"
+        f"Stake: <b>{money(stake)}</b>\n"
+        f"Return: <b>{money(float(stake) * float(odds))}</b>"
+    )
 
 
 def generate_football_builds(scored):
@@ -572,84 +580,81 @@ def generate_football_builds(scored):
 
     sections = []
 
-    # SAFE: low-risk favourite route, add goal leg only when available.
+    # 🟢 SAFE = main sensible angle.
     safe_legs = [f"{fav_team} To Win"]
     safe_odds = fav_odds
-    safe_bookmaker = fav["bookmaker"]
-
-    if over_25 and over_25["price"] <= 1.90:
-        safe_legs.append("Over 2.5 Goals")
-        safe_odds = round(safe_odds * over_25["price"], 2)
-        safe_bookmaker = "Estimated Acca"
 
     sections.append(build_bet_section(
         "🟢 <b>SAFE</b>",
         10,
         safe_odds,
         safe_legs,
-        "Safer route from favourite/goal markets.",
-        bookmaker=safe_bookmaker,
+        "Main sensible bet.",
+        bookmaker=fav.get("bookmaker"),
         include=True,
     ))
 
-    # VALUE: best available acca.
-    value_legs = []
-    value_odds = None
-    value_bookmaker = "Estimated Acca"
-
-    if fav_odds and over_25 and btts_yes:
-        value_legs = [f"{fav_team} To Win", "Over 2.5 Goals", "BTTS Yes"]
-        value_odds = round(fav_odds * over_25["price"] * btts_yes["price"], 2)
-    elif fav_odds and over_25:
-        value_legs = [f"{fav_team} To Win", "Over 2.5 Goals"]
-        value_odds = round(fav_odds * over_25["price"], 2)
-    elif fav_odds and btts_yes:
-        value_legs = [f"{fav_team} To Win", "BTTS Yes"]
-        value_odds = round(fav_odds * btts_yes["price"], 2)
-    elif draw_price:
-        value_legs = ["Draw"]
-        value_odds = draw_price["price"]
-        value_bookmaker = draw_price["bookmaker"]
-
-    sections.append(build_bet_section(
-        "🟡 <b>VALUE ⭐</b>",
-        10,
-        value_odds,
-        value_legs,
-        "Best risk/reward angle available.",
-        bookmaker=value_bookmaker,
-        include=value_odds is not None,
-    ))
-
-    # COVER: protection / alternate game script.
+    # 🔵 COVER = protection for the SAFE bet.
+    # If SAFE is favourite to win, cover is usually Draw. If no draw, use outsider win.
     cover_legs = []
     cover_odds = None
     cover_bookmaker = None
 
-    if draw_price and under_25:
-        cover_legs = ["Draw", "Under 2.5 Goals"]
-        cover_odds = round(draw_price["price"] * under_25["price"], 2)
-        cover_bookmaker = "Estimated Acca"
-    elif fav_odds <= 1.90 and btts_no:
-        cover_legs = [f"{fav_team} To Win", "BTTS No"]
-        cover_odds = round(fav_odds * btts_no["price"], 2)
-        cover_bookmaker = "Estimated Acca"
-    elif draw_price:
+    if draw_price:
         cover_legs = ["Draw"]
         cover_odds = draw_price["price"]
         cover_bookmaker = draw_price["bookmaker"]
+    elif home_price and away_price:
+        outsider = home_price if home_price["price"] > away_price["price"] else away_price
+        cover_legs = [f"{outsider['name']} To Win"]
+        cover_odds = outsider["price"]
+        cover_bookmaker = outsider["bookmaker"]
 
     sections.append(build_bet_section(
         "🔵 <b>COVER</b>",
         4,
         cover_odds,
         cover_legs,
-        "Protection angle if the main route is messy.",
+        "Cover for the safe bet.",
         bookmaker=cover_bookmaker,
         include=cover_odds is not None,
     ))
 
-    # RISKY: higher upside.
+    # 🟡 VALUE = best reasonable value angle, usually 1-2 legs.
+    value_legs = []
+    value_odds = None
+    value_bookmaker = "Estimated"
+
+    if fav_odds and over_25:
+        value_legs = [f"{fav_team} To Win", "Over 2.5 Goals"]
+        value_odds = round(fav_odds * over_25["price"], 2)
+    elif fav_odds and btts_yes:
+        value_legs = [f"{fav_team} To Win", "BTTS Yes"]
+        value_odds = round(fav_odds * btts_yes["price"], 2)
+    elif over_25:
+        value_legs = ["Over 2.5 Goals"]
+        value_odds = over_25["price"]
+        value_bookmaker = over_25["bookmaker"]
+    elif btts_yes:
+        value_legs = ["BTTS Yes"]
+        value_odds = btts_yes["price"]
+        value_bookmaker = btts_yes["bookmaker"]
+    elif 1.75 <= fav_odds <= 3.20:
+        value_legs = [f"{fav_team} To Win"]
+        value_odds = fav_odds
+        value_bookmaker = fav["bookmaker"]
+
+    sections.append(build_bet_section(
+        "🟡 <b>VALUE ⭐</b>",
+        10,
+        value_odds,
+        value_legs,
+        "Best value angle.",
+        bookmaker=value_bookmaker,
+        include=value_odds is not None,
+    ))
+
+    # 🔴 RISKY = the actual accumulator / higher-return play.
     risky_legs = []
     risky_odds = None
     risky_bookmaker = "Estimated Acca"
@@ -657,22 +662,21 @@ def generate_football_builds(scored):
     if fav_odds and over_25 and btts_yes:
         risky_legs = [f"{fav_team} To Win", "Over 2.5 Goals", "BTTS Yes"]
         risky_odds = round(fav_odds * over_25["price"] * btts_yes["price"], 2)
+    elif fav_odds and over_25 and draw_price:
+        risky_legs = [f"{fav_team} To Win", "Over 2.5 Goals"]
+        risky_odds = round(fav_odds * over_25["price"], 2)
     elif home_price and away_price:
         outsider = home_price if home_price["price"] > away_price["price"] else away_price
         risky_legs = [f"{outsider['name']} To Win"]
         risky_odds = outsider["price"]
         risky_bookmaker = outsider["bookmaker"]
-    elif draw_price:
-        risky_legs = ["Draw"]
-        risky_odds = draw_price["price"]
-        risky_bookmaker = draw_price["bookmaker"]
 
     sections.append(build_bet_section(
         "🔴 <b>RISKY ⚠️</b>",
         3,
         risky_odds,
         risky_legs,
-        "Small stake only.",
+        "High return play.",
         bookmaker=risky_bookmaker,
         include=risky_odds is not None,
     ))
@@ -682,7 +686,6 @@ def generate_football_builds(scored):
 
 def build_football_setup_message(scored):
     event = scored["event"]
-    fav = scored["favourite"]
 
     home = event.get("home_team", "Home")
     away = event.get("away_team", "Away")
@@ -766,7 +769,7 @@ def run_football_scan(post_to_topic=True):
     )
 
     if not setups:
-        summary += "No qualifying setups found today.\n"
+        summary += "No qualifying setups found today. Run /showallfootball to see scores.\n"
 
     if errors:
         summary += "\n<b>API notes:</b>\n" + "\n".join([f"• {e}" for e in errors[:5]]) + "\n"
@@ -816,10 +819,11 @@ def build_showallfootball_message(limit=10):
             home = event.get("home_team", "Home")
             away = event.get("away_team", "Away")
             fav = scored["favourite"]
+            status = setup_status(scored["score"])
             lines.append(
                 f"<b>{i}. {home} vs {away}</b>\n"
-                f"{quality_label(scored['score'])} — <b>{scored['score']}/100</b>\n"
-                f"Fav: {fav['team']} @ {format_odds(fav['odds'])}\n"
+                f"{status} — <b>{scored['score']}/100</b> — {quality_label(scored['score'])}\n"
+                f"Safe: {fav['team']} @ {format_odds(fav['odds'])}\n"
             )
 
     if errors:
