@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
 
@@ -18,7 +18,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.2.2-football-scoring-tools"
+VERSION = "the-black-book-v0.2.3-today-accumulator-builder"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -32,6 +32,7 @@ RUGBY_TOPIC_ID = int(os.environ.get("RUGBY_TOPIC_ID", "15") or 15)
 MIN_FOOTBALL_SCORE = int(os.environ.get("MIN_FOOTBALL_SCORE", "65") or 65)
 RUNTIME_MIN_FOOTBALL_SCORE = MIN_FOOTBALL_SCORE
 MAX_FOOTBALL_POSTS = int(os.environ.get("MAX_FOOTBALL_POSTS", "3") or 3)
+FOOTBALL_SCAN_DAYS = int(os.environ.get("FOOTBALL_SCAN_DAYS", "1") or 1)
 
 # Keep this controlled so the free Odds API credits do not get burned.
 FOOTBALL_SPORT_KEYS = [
@@ -195,6 +196,49 @@ def kickoff_text(commence_time):
     except Exception:
         return raw
 
+def parse_event_datetime(commence_time):
+    raw = str(commence_time or "").strip()
+    if not raw:
+        return None
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def is_event_in_scan_window(event, days=None):
+    """Default is today only in UTC. Use FOOTBALL_SCAN_DAYS to widen later."""
+    days = FOOTBALL_SCAN_DAYS if days is None else int(days)
+    event_dt = parse_event_datetime(event.get("commence_time"))
+
+    if not event_dt:
+        return False
+
+    start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=days)
+
+    return start <= event_dt < end
+
+
+def compact_league_name(sport_key):
+    mapping = {
+        "soccer_epl": "EPL",
+        "soccer_fifa_world_cup": "World Cup",
+        "soccer_italy_serie_a": "Serie A",
+        "soccer_germany_dfb_pokal": "DFB-Pokal",
+        "soccer_sweden_allsvenskan": "Sweden",
+        "soccer_norway_eliteserien": "Norway",
+        "soccer_league_of_ireland": "Ireland",
+        "soccer_conmebol_copa_libertadores": "Libertadores",
+        "soccer_conmebol_copa_sudamericana": "Sudamericana",
+    }
+    return mapping.get(str(sport_key), str(sport_key).replace("soccer_", "").replace("_", " ").title())
+
+
+def build_compact_bet_line(leg, odds):
+    return f"{leg} @ {format_odds(odds)}"
+
 
 # =========================
 # Odds API helpers
@@ -268,32 +312,53 @@ def clean_api_error(error_text):
 
 
 def fetch_football_odds():
-    all_events = []
+    """
+    Pull h2h first because it is broadly supported.
+    Then try totals and btts separately. If they fail, h2h still works.
+    Also filters to today's fixtures by default.
+    """
+    events_by_id = {}
     errors = []
 
+    market_attempts = ["h2h", "totals", "btts"]
+
     for sport_key in FOOTBALL_SPORT_KEYS:
-        try:
-            data = odds_api_get(
-                f"/sports/{sport_key}/odds",
-                params={
-                    "regions": ODDS_REGION,
-                    "markets": ODDS_MARKETS,
-                    "oddsFormat": "decimal",
-                    "dateFormat": "iso",
-                },
-            )
+        for market_name in market_attempts:
+            try:
+                data = odds_api_get(
+                    f"/sports/{sport_key}/odds",
+                    params={
+                        "regions": ODDS_REGION,
+                        "markets": market_name,
+                        "oddsFormat": "decimal",
+                        "dateFormat": "iso",
+                    },
+                )
 
-            if not data:
-                continue
+                if not data:
+                    continue
 
-            for event in data:
-                event["sport_key_used"] = sport_key
-                all_events.append(event)
+                for event in data:
+                    if not is_event_in_scan_window(event):
+                        continue
 
-        except Exception as e:
-            errors.append(f"{sport_key}: {clean_api_error(e)}")
+                    event_id = event.get("id") or f"{event.get('home_team')}|{event.get('away_team')}|{event.get('commence_time')}"
+                    event["sport_key_used"] = sport_key
 
-    return all_events, errors
+                    if event_id not in events_by_id:
+                        events_by_id[event_id] = event
+                    else:
+                        existing = events_by_id[event_id]
+                        existing_bookmakers = existing.setdefault("bookmakers", [])
+                        existing_bookmakers.extend(event.get("bookmakers", []))
+
+            except Exception as e:
+                # h2h is essential. totals/btts are optional, so keep optional errors quiet unless useful.
+                cleaned = clean_api_error(e)
+                if market_name == "h2h" or "API key" in cleaned or "limit" in cleaned:
+                    errors.append(f"{sport_key}/{market_name}: {cleaned}")
+
+    return list(events_by_id.values()), errors
 
 
 # =========================
@@ -530,16 +595,17 @@ def build_bet_section(label, stake, odds, legs, purpose, bookmaker=None, include
         return ""
 
     return (
-        f"{label}\n"
-        f"Stake: <b>{money(stake)}</b>\n"
-        f"Odds: <b>{format_odds(odds)}</b>\n"
-        f"Return: <b>{money(float(stake) * float(odds))}</b>\n"
-        + (f"Bookmaker: <b>{bookmaker}</b>\n" if bookmaker else "")
-        + "\n"
-        f"<b>Bet:</b>\n"
-        + "\n".join([f"• {leg}" for leg in legs])
-        + "\n\n"
-        f"Purpose: {purpose}\n"
+        f"{label}
+"
+        f"{money(stake)} stake | {format_odds(odds)} | Return {money(float(stake) * float(odds))}
+"
+        + (f"{bookmaker}
+" if bookmaker else "")
+        + "
+".join([f"• {leg}" for leg in legs])
+        + f"
+<i>{purpose}</i>
+"
     )
 
 
@@ -560,110 +626,111 @@ def generate_football_builds(scored):
 
     sections = []
 
-    # SAFE - always create from strongest favourite if available.
+    # SAFE: low-risk 1-2 leg setup.
     safe_legs = [f"{fav_team} To Win"]
     safe_odds = fav_odds
     safe_bookmaker = fav["bookmaker"]
+
+    if over_25 and over_25["price"] <= 1.85:
+        safe_legs.append("Over 2.5 Goals")
+        safe_odds = round(safe_odds * over_25["price"], 2)
+        safe_bookmaker = "Estimated Acca"
 
     sections.append(build_bet_section(
         "🟢 <b>SAFE</b>",
         10,
         safe_odds,
         safe_legs,
-        "Lowest-risk angle available from current odds.",
+        "Safer route from favourite/goal markets.",
         bookmaker=safe_bookmaker,
         include=True,
     ))
 
-    # VALUE - prefer goals/BTTS if available, otherwise use best reasonable win price.
+    # VALUE: 2-3 leg accumulator when markets exist.
     value_legs = []
     value_odds = None
-    value_bookmaker = None
+    value_bookmaker = "Estimated Acca"
 
-    if over_25 and 1.70 <= over_25["price"] <= 2.80:
-        value_legs = ["Over 2.5 Goals"]
-        value_odds = over_25["price"]
-        value_bookmaker = over_25["bookmaker"]
-    elif btts_yes and 1.70 <= btts_yes["price"] <= 2.80:
-        value_legs = ["BTTS Yes"]
-        value_odds = btts_yes["price"]
-        value_bookmaker = btts_yes["bookmaker"]
-    elif 1.65 <= fav_odds <= 3.20:
-        value_legs = [f"{fav_team} To Win"]
-        value_odds = fav_odds
-        value_bookmaker = fav["bookmaker"]
+    if fav_odds and over_25 and btts_yes:
+        value_legs = [f"{fav_team} To Win", "Over 2.5 Goals", "BTTS Yes"]
+        value_odds = round(fav_odds * over_25["price"] * btts_yes["price"], 2)
+    elif fav_odds and over_25:
+        value_legs = [f"{fav_team} To Win", "Over 2.5 Goals"]
+        value_odds = round(fav_odds * over_25["price"], 2)
+    elif fav_odds and btts_yes:
+        value_legs = [f"{fav_team} To Win", "BTTS Yes"]
+        value_odds = round(fav_odds * btts_yes["price"], 2)
     elif draw_price:
         value_legs = ["Draw"]
         value_odds = draw_price["price"]
         value_bookmaker = draw_price["bookmaker"]
+    else:
+        value_legs = [f"{fav_team} To Win"]
+        value_odds = fav_odds
+        value_bookmaker = fav["bookmaker"]
 
     sections.append(build_bet_section(
         "🟡 <b>VALUE ⭐</b>",
         10,
         value_odds,
         value_legs,
-        "Best risk/reward angle available from current odds.",
+        "Best risk/reward angle available.",
         bookmaker=value_bookmaker,
         include=value_odds is not None,
     ))
 
-    # COVER - alternative outcome protection.
+    # COVER: protection angle, should not duplicate value where possible.
     cover_legs = []
     cover_odds = None
     cover_bookmaker = None
 
-    if draw_price and 2.50 <= draw_price["price"] <= 5.50:
+    if under_25 and draw_price:
+        cover_legs = ["Draw", "Under 2.5 Goals"]
+        cover_odds = round(draw_price["price"] * under_25["price"], 2)
+        cover_bookmaker = "Estimated Acca"
+    elif btts_no and fav_odds <= 1.90:
+        cover_legs = [f"{fav_team} To Win", "BTTS No"]
+        cover_odds = round(fav_odds * btts_no["price"], 2)
+        cover_bookmaker = "Estimated Acca"
+    elif draw_price:
         cover_legs = ["Draw"]
         cover_odds = draw_price["price"]
         cover_bookmaker = draw_price["bookmaker"]
-    elif under_25 and under_25["price"] <= 3.00:
-        cover_legs = ["Under 2.5 Goals"]
-        cover_odds = under_25["price"]
-        cover_bookmaker = under_25["bookmaker"]
-    elif btts_no:
-        cover_legs = ["BTTS No"]
-        cover_odds = btts_no["price"]
-        cover_bookmaker = btts_no["bookmaker"]
 
     sections.append(build_bet_section(
         "🔵 <b>COVER</b>",
         4,
         cover_odds,
         cover_legs,
-        "Alternative route if the main angle fails.",
+        "Protection angle if the main route is messy.",
         bookmaker=cover_bookmaker,
         include=cover_odds is not None,
     ))
 
-    # RISKY - high upside. If goals/BTTS are unavailable, create a clear h2h-based outsider angle.
+    # RISKY: highest upside angle.
     risky_legs = []
     risky_odds = None
-    risky_bookmaker = None
+    risky_bookmaker = "Estimated Acca"
 
     if fav_odds and over_25 and btts_yes:
-        risky_legs = [
-            f"{fav_team} To Win",
-            "Over 2.5 Goals",
-            "BTTS Yes",
-        ]
+        risky_legs = [f"{fav_team} To Win", "Over 2.5 Goals", "BTTS Yes"]
         risky_odds = round(fav_odds * over_25["price"] * btts_yes["price"], 2)
-        risky_bookmaker = "Estimated"
+    elif home_price and away_price and draw_price:
+        outsider = home_price if home_price["price"] > away_price["price"] else away_price
+        risky_legs = [f"{outsider['name']} To Win", "Draw cover unavailable"]
+        risky_odds = outsider["price"]
+        risky_bookmaker = outsider["bookmaker"]
     elif draw_price:
         risky_legs = ["Draw"]
         risky_odds = draw_price["price"]
         risky_bookmaker = draw_price["bookmaker"]
-    elif home_price and away_price:
-        outsider = home_price if home_price["price"] > away_price["price"] else away_price
-        risky_legs = [f"{outsider['name']} To Win"]
-        risky_odds = outsider["price"]
-        risky_bookmaker = outsider["bookmaker"]
 
     sections.append(build_bet_section(
         "🔴 <b>RISKY ⚠️</b>",
         3,
         risky_odds,
         risky_legs,
-        "Higher-risk angle. Small stake only.",
+        "Small stake only.",
         bookmaker=risky_bookmaker,
         include=risky_odds is not None,
     ))
@@ -686,128 +753,36 @@ def build_football_setup_message(scored):
     if not sections:
         return None
 
-    reasons = scored["reasons"][:4]
-    warnings = scored["warnings"][:3]
+    reasons = scored["reasons"][:2]
+    reason_line = " | ".join(reasons) if reasons else "Market data supports setup"
 
-    reason_block = "\n".join([f"• {r}" for r in reasons]) if reasons else "• Market data supports the setup"
-
-    warning_block = ""
-    if warnings:
-        warning_block = "\n\n<b>Warnings:</b>\n" + "\n".join([f"⚠️ {w}" for w in warnings])
-
-    bot_play = "Best Single: <b>🟢 SAFE</b>"
+    bot_pick = "🟢 SAFE"
     if any("VALUE" in section for section in sections):
-        bot_play = "Best Single: <b>🟡 VALUE</b>"
+        bot_pick = "🟡 VALUE"
 
     return (
-        "⚽ <b>THE BLACK BOOK FOOTBALL</b>\n\n"
-        "🔥 <b>SETUP FOUND</b>\n\n"
-        f"Competition: <code>{sport_key}</code>\n"
-        f"Match: <b>{home} vs {away}</b>\n"
-        f"Kickoff: <b>{kickoff}</b>\n\n"
-        f"Setup Score: <b>{scored['score']}/100</b>\n"
-        f"Confidence: <b>{scored['confidence']}</b>\n"
-        f"Favourite: <b>{fav['team']}</b>\n"
-        f"Bookmakers Found: <b>{prices.get('bookmaker_count', 0)}</b>\n\n"
-        "━━━━━━━━━━━━━━\n\n"
-        + "\n━━━━━━━━━━━━━━\n\n".join(sections)
-        + "\n━━━━━━━━━━━━━━\n\n"
-        "🤖 <b>BOT PLAY</b>\n"
-        f"{bot_play}\n\n"
-        "<b>Why it qualified:</b>\n"
-        f"{reason_block}"
-        f"{warning_block}\n\n"
-        "Find The Edge.\n\n"
-        "<i>Note: RISKY combo odds are estimated from available single-market odds unless stated otherwise.</i>"
-    )
+        "⚽ <b>THE BLACK BOOK</b>
 
+"
+        f"<b>{home} vs {away}</b>
+"
+        f"{compact_league_name(sport_key)} | {kickoff}
 
+"
+        f"Score: <b>{scored['score']}/100</b> | <b>{scored['confidence']}</b>
+"
+        f"Fav: <b>{fav['team']}</b> @ {format_odds(fav['odds'])}
 
-def scan_all_football_scores(limit=10):
-    events, errors = fetch_football_odds()
-    scored_events = []
-
-    for event in events:
-        scored = score_football_event(event)
-        if not scored:
-            continue
-
-        message = build_football_setup_message(scored)
-        if message:
-            scored["message"] = message
-
-        scored_events.append(scored)
-
-    scored_events.sort(key=lambda item: item["score"], reverse=True)
-    return scored_events[:limit], errors, len(events)
-
-
-def build_showallfootball_message(limit=10):
-    scored_events, errors, scanned_count = scan_all_football_scores(limit=limit)
-
-    lines = [
-        "⚽ <b>THE BLACK BOOK FOOTBALL SCORES</b>",
-        "",
-        f"Fixtures scanned: <b>{scanned_count}</b>",
-        f"Showing top: <b>{len(scored_events)}</b>",
-        f"Current post threshold: <b>{get_current_threshold()}</b>",
-        "",
-    ]
-
-    if not scored_events:
-        lines.append("No scorable football fixtures found.")
-    else:
-        for i, scored in enumerate(scored_events, start=1):
-            event = scored["event"]
-            home = event.get("home_team", "Home")
-            away = event.get("away_team", "Away")
-            fav = scored["favourite"]
-            label = quality_label(scored["score"])
-            kickoff = kickoff_text(event.get("commence_time"))
-
-            lines.append(
-                f"<b>{i}. {home} vs {away}</b>\n"
-                f"{label} — <b>{scored['score']}/100</b>\n"
-                f"Kickoff: {kickoff}\n"
-                f"Fav: {fav['team']} @ {format_odds(fav['odds'])}\n"
-            )
-
-    if errors:
-        lines.append("<b>API notes:</b>")
-        for err in errors[:4]:
-            lines.append(f"• {err}")
-
-    return "\n".join(lines)
-
-
-def build_setscoring_message(args_text=""):
-    args_text = str(args_text or "").strip()
-
-    if not args_text:
-        return (
-            "⚙️ <b>FOOTBALL SCORING</b>\n\n"
-            f"Current threshold: <b>{get_current_threshold()}</b>\n\n"
-            "Use:\n"
-            "<code>/setscoring 60</code>\n"
-            "<code>/setscoring 70</code>\n"
-            "<code>/setscoring 78</code>\n\n"
-            "Lower score = more setups posted.\n"
-            "Higher score = stricter filtering."
-        )
-
-    value = args_text.split()[0]
-    ok, msg = set_current_threshold(value)
-
-    if ok:
-        return (
-            "✅ <b>SCORING UPDATED</b>\n\n"
-            f"{msg}\n\n"
-            "Run <code>/scanfootball</code> again to test."
-        )
-
-    return (
-        "⚠️ <b>SCORING NOT UPDATED</b>\n\n"
-        f"{msg}"
+"
+        + "
+".join(sections)
+        + "
+"
+        f"🎯 <b>Bot Pick:</b> {bot_pick}
+"
+        f"📌 <i>{reason_line}</i>
+"
+        "<i>Acca odds marked Estimated Acca are calculated from available single-market odds.</i>"
     )
 
 
@@ -858,7 +833,7 @@ def run_football_scan(post_to_topic=True):
 
     summary = (
         "📖 <b>THE BLACK BOOK SCAN COMPLETE</b>\n\n"
-        f"⚽ Fixtures scanned: <b>{scanned_count}</b>\n"
+        f"⚽ Today fixtures scanned: <b>{scanned_count}</b>\n"
         f"🔥 Setups found: <b>{len(setups)}</b>\n"
         f"📤 Posts sent: <b>{posts_sent}</b>\n"
         f"🎯 Market mode: <b>{ODDS_MARKETS}</b>\n"
@@ -866,7 +841,7 @@ def run_football_scan(post_to_topic=True):
     )
 
     if not setups:
-        summary += "No qualifying football setups found.\n"
+        summary += "No qualifying football setups found for today.\n"
 
     if errors:
         summary += "\n<b>API notes:</b>\n"
@@ -899,7 +874,7 @@ def build_start_message():
         "Commands:\n"
         "• /scan - Run all active scanners\n"
         "• /scanfootball - Scan football only\n"
-        "• /showallfootball - Show top scored football fixtures\n"
+        "• /showallfootball - Show today top scored fixtures\n"
         "• /setscoring - View/change scoring threshold\n"
         "• /sports - Show available soccer sport keys\n"
         "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
@@ -917,7 +892,7 @@ def build_help_message():
         "• /start - Bot intro\n"
         "• /scan - Run all active scanners\n"
         "• /scanfootball - Scan football only\n"
-        "• /showallfootball - Show top scored football fixtures\n"
+        "• /showallfootball - Show today top scored fixtures\n"
         "• /setscoring 65 - Change scoring threshold\n"
         "• /sports - Show available soccer sport keys from Odds API\n"
         "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
