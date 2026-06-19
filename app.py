@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import requests
+import itertools
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
@@ -1261,13 +1262,17 @@ def build_start_message():
         "📖 <b>THE BLACK BOOK</b>\n\n"
         "Bot Status: <b>ONLINE ✅</b>\n"
         f"Version: <b>{VERSION}</b>\n\n"
-        "Commands:\n"
-        "• /scan - Run all active scanners\n"
-        "• /scanfootball - Scan football only\n"
-        "• /showallfootball - Show today top scored fixtures\n"
+        "<b>Main Commands</b>\n"
+        "• /scanfootball - Run football scanner and post qualifying setups\n"
+        "• /previewfootball - Preview assessed fixtures before posting\n"
+        "• /showallfootball - Show today's fixture scores\n\n"
+        "<b>Settings</b>\n"
+        "• /score - View current post score\n"
+        "• /score 60 - Change post score\n"
+        "• /settings - Show scanner settings\n\n"
+        "<b>Data / Setup</b>\n"
+        "• /marketsfootball - Test available Odds API markets\n"
         "• /sports - Show available soccer sport keys\n"
-        "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
-        "• /risky - Demo risky setup only\n"
         "• /chatid - Show current chat/topic ID\n"
         "• /help - Show help menu\n\n"
         "Find The Edge."
@@ -1277,22 +1282,23 @@ def build_start_message():
 def build_help_message():
     return (
         "📖 <b>THE BLACK BOOK HELP</b>\n\n"
-        "<b>Available Commands</b>\n\n"
-        "• /start - Bot intro\n"
-        "• /scan - Run all active scanners\n"
-        "• /scanfootball - Scan football only\n"
-        "• /showallfootball - Show today top scored fixtures\n"
-        "• /sports - Show available soccer sport keys from Odds API\n"
-        "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
-        "• /risky - Demo risky setup only\n"
-        "• /chatid - Show current chat/topic ID\n"
-        "• /help - Show this menu\n\n"
-        "<b>Current Status</b>\n"
-        "• Football scanner active\n"
-        "• Racing scanner planned\n"
-        "• Rugby scanner planned\n\n"
+        "<b>Football</b>\n"
+        "• /scanfootball - Scan football and post qualifying setups\n"
+        "• /previewfootball - Show assessed fixtures and candidate combos\n"
+        "• /showallfootball - Show today fixture scores\n\n"
+        "<b>Controls</b>\n"
+        "• /score - Show current post score\n"
+        "• /score 60 - Lower/raise post threshold\n"
+        "• /settings - Show active settings\n\n"
+        "<b>Data</b>\n"
+        "• /marketsfootball - Test which bet-builder markets are available\n"
+        "• /sports - Show available soccer sport keys\n"
+        "• /chatid - Show current chat/topic ID\n\n"
+        "<b>Demo</b>\n"
+        "• /top - Demo old SAFE / VALUE / COVER / RISKY card\n"
+        "• /risky - Demo risky setup only\n\n"
         "<b>Posting Rule</b>\n"
-        "No edge = no post."
+        "The bot posts only when the assessment score passes your /score threshold."
     )
 
 
@@ -1622,6 +1628,10 @@ def telegram_webhook():
 
         if lower_text.startswith("/start"):
             reply = build_start_message()
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/version"):
+            reply = f"📖 <b>THE BLACK BOOK</b>\n\nVersion: <b>{VERSION}</b>"
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/help"):
