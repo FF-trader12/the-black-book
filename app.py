@@ -7,8 +7,8 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.3.0
-# Assessment Engine
+# THE BLACK BOOK v0.3.1
+# Team Win + Goals Assessment Engine
 # =========================
 
 BOT_TOKEN = (
@@ -19,7 +19,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.0"
+VERSION = "the-black-book-v0.3.1"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -747,18 +747,15 @@ def build_candidate_legs(scored):
     return legs
 
 
+
 def combo_has_conflict(legs):
     names = {leg["name"] for leg in legs}
-    types = [leg["type"] for leg in legs]
+    result_types = {"winner", "draw", "outsider"}
 
     if "Over 2.5 Goals" in names and "Under 2.5 Goals" in names:
         return True
-
     if "BTTS Yes" in names and "BTTS No" in names:
         return True
-
-    # Avoid multiple match result outcomes in one same-game combo.
-    result_types = {"winner", "draw", "outsider"}
     if sum(1 for leg in legs if leg["type"] in result_types) > 1:
         return True
 
@@ -772,51 +769,51 @@ def combo_correlation_score(legs):
     score = 50
 
     if "winner" in types and "goals" in types:
-        score += 12
+        score += 25
+    if "winner" in types and "Over 2.5 Goals" in names:
+        score += 8
+    if "winner" in types and "Under 2.5 Goals" in names:
+        score += 6
     if "goals" in types and "btts" in types and "Over 2.5 Goals" in names and "BTTS Yes" in names:
         score += 14
-    if "winner" in types and "btts" in types and "BTTS No" in names:
-        score += 6
     if "draw" in types and "Under 2.5 Goals" in names:
-        score += 8
+        score += 6
     if "outsider" in types:
-        score -= 12
+        score -= 16
 
     return max(0, min(score, 100))
 
 
 def combo_value_score(odds):
-    # Rewards odds that are usable, not too short, not completely wild.
-    if odds < 1.35:
-        return 15
-    if odds < 1.70:
-        return 42
-    if odds < 2.50:
-        return 65
-    if odds < 4.50:
-        return 82
-    if odds < 8.00:
-        return 74
-    if odds < 13.00:
+    if odds < 1.30:
+        return 10
+    if odds < 1.60:
+        return 38
+    if odds < 2.10:
+        return 64
+    if odds < 3.50:
+        return 88
+    if odds < 5.50:
+        return 78
+    if odds < 8.50:
         return 58
-    return 35
+    return 32
 
 
 def combo_risk_penalty(legs, odds):
     penalty = 0
 
     if len(legs) == 2:
-        penalty += 8
+        penalty += 4
     elif len(legs) >= 3:
-        penalty += 18
+        penalty += 14
 
-    if odds >= 8:
-        penalty += 8
-    if odds >= 13:
-        penalty += 18
-
+    if odds >= 6:
+        penalty += 6
+    if odds >= 10:
+        penalty += 16
     if any(leg["type"] == "outsider" for leg in legs):
-        penalty += 15
+        penalty += 18
 
     return penalty
 
@@ -836,13 +833,27 @@ def assess_combo(legs):
     correlation = combo_correlation_score(legs)
     risk_penalty = combo_risk_penalty(legs, odds)
 
-    # Balanced score: confidence matters most, but value/correlation matter.
-    final_score = round((confidence * 0.50) + (value * 0.28) + (correlation * 0.22) - risk_penalty)
+    types = {leg["type"] for leg in legs}
+    bonus = 0
 
-    if final_score < 0:
-        final_score = 0
-    if final_score > 100:
-        final_score = 100
+    if "winner" in types and "goals" in types:
+        bonus += 12
+    if len(legs) == 1 and "winner" in types:
+        bonus += 2
+    if "draw" in types:
+        bonus -= 4
+    if "outsider" in types:
+        bonus -= 10
+
+    final_score = round(
+        (confidence * 0.42)
+        + (value * 0.30)
+        + (correlation * 0.28)
+        + bonus
+        - risk_penalty
+    )
+
+    final_score = max(0, min(100, final_score))
 
     return {
         "legs": legs,
@@ -860,7 +871,6 @@ def assess_combo(legs):
 def generate_candidate_combos(scored):
     legs = build_candidate_legs(scored)
     combos = []
-
     max_legs = max(1, min(MAX_COMBO_LEGS, 3))
 
     for size in range(1, max_legs + 1):
@@ -869,7 +879,6 @@ def generate_candidate_combos(scored):
             if assessed:
                 combos.append(assessed)
 
-    # Remove duplicate leg name sets, keep highest score.
     unique = {}
     for combo in combos:
         key = tuple(sorted(combo["leg_names"]))
@@ -890,52 +899,48 @@ def select_best_setup(scored):
     doubles = [c for c in combos if c["type_count"] == 2]
     trebles = [c for c in combos if c["type_count"] >= 3]
 
-    # SAFE = strongest low-risk single, usually favourite win.
+    fav_safe = next((c for c in singles if c["leg_names"] == [fav_name]), None)
     safe_candidates = [
         c for c in singles
-        if c["odds"] <= 2.20 and c["score"] >= 45 and "outsider" not in [leg["type"] for leg in c["legs"]]
+        if c["odds"] <= 2.40
+        and c["score"] >= 45
+        and not any(leg["type"] == "outsider" for leg in c["legs"])
     ]
-    safe = max(safe_candidates, key=lambda c: (c["score"], -c["odds"]), default=None)
+    safe = fav_safe if fav_safe and fav_safe["score"] >= 45 else max(
+        safe_candidates,
+        key=lambda c: (c["score"], -c["odds"]),
+        default=None,
+    )
 
-    # Prefer favourite win as safe if it exists and is sensible.
-    fav_safe = next((c for c in singles if c["leg_names"] == [fav_name]), None)
-    if fav_safe and fav_safe["score"] >= 45:
-        safe = fav_safe
-
-    # COVER = lower-risk protection related to the safe. Prefer Draw if safe is favourite win.
-    cover = None
-    if safe and fav_name in safe["leg_names"]:
-        cover = next((c for c in singles if c["leg_names"] == ["Draw"]), None)
-
-    if not cover:
-        cover_candidates = [
-            c for c in singles
-            if c != safe and c["odds"] <= 5.50 and any(tag in ["cover", "hedge"] for leg in c["legs"] for tag in leg.get("tags", []))
-        ]
-        cover = max(cover_candidates, key=lambda c: (c["score"], c["odds"]), default=None)
-
-    # VALUE = best risk/reward double or strong single.
     value_candidates = [
         c for c in doubles
-        if 1.80 <= c["odds"] <= 5.50 and c["score"] >= MIN_VALUE_COMBO_SCORE
+        if any(leg["type"] == "winner" for leg in c["legs"])
+        and any(leg["type"] == "goals" for leg in c["legs"])
+        and 1.70 <= c["odds"] <= 5.50
+        and c["score"] >= MIN_VALUE_COMBO_SCORE
     ]
+
     if not value_candidates:
         value_candidates = [
-            c for c in singles
-            if 1.75 <= c["odds"] <= 3.50 and c != safe and c["score"] >= 50
-        ]
-    value = max(value_candidates, key=lambda c: (c["score"], c["odds"]), default=None)
-
-    # RISKY = best higher-upside acca, but not a random outsider unless it scores well.
-    risky_candidates = [
-        c for c in trebles
-        if 3.50 <= c["odds"] <= 12.00 and c["score"] >= MIN_RISKY_COMBO_SCORE
-    ]
-    if not risky_candidates:
-        risky_candidates = [
             c for c in doubles
-            if 3.00 <= c["odds"] <= 9.00 and c["score"] >= MIN_RISKY_COMBO_SCORE
+            if 1.70 <= c["odds"] <= 5.50
+            and c["score"] >= MIN_VALUE_COMBO_SCORE
         ]
+
+    value = max(value_candidates, key=lambda c: (c["score"], c["odds"]), default=None)
+    cover = safe
+
+    if not cover:
+        draw_single = next((c for c in singles if c["leg_names"] == ["Draw"]), None)
+        if draw_single and draw_single["odds"] <= 5.50:
+            cover = draw_single
+
+    risky_candidates = [
+        c for c in (trebles + doubles)
+        if 2.70 <= c["odds"] <= 9.00
+        and c["score"] >= MIN_RISKY_COMBO_SCORE
+        and any(leg["type"] == "winner" for leg in c["legs"])
+    ]
     risky = max(risky_candidates, key=lambda c: (c["score"], c["odds"]), default=None)
 
     best_combo_score = max([c["score"] for c in combos], default=0)
@@ -953,20 +958,25 @@ def select_best_setup(scored):
 def fixture_assessment_score(scored, setup):
     score = scored["score"]
 
-    if setup.get("value"):
-        score += int((setup["value"]["score"] - 50) * 0.20)
-    else:
-        score -= 8
+    value = setup.get("value")
+    risky = setup.get("risky")
+    safe = setup.get("safe")
 
-    if setup.get("risky"):
-        score += int((setup["risky"]["score"] - 50) * 0.10)
+    if value:
+        score += int((value["score"] - 50) * 0.35)
     else:
-        score -= 5
+        score -= 10
 
-    if setup.get("safe") and setup["safe"]["score"] >= 55:
-        score += 4
+    if risky:
+        score += int((risky["score"] - 50) * 0.15)
+    else:
+        score -= 3
+
+    if safe and safe["score"] >= 55:
+        score += 3
 
     return max(0, min(100, score))
+
 
 
 def build_combo_section(label, combo, stake):
@@ -974,13 +984,11 @@ def build_combo_section(label, combo, stake):
         return ""
 
     return (
-        f"{label}\\n"
-        f"{compact_legs(combo['leg_names'])}\\n\\n"
-        f"Odds: <b>{format_odds(combo['odds'])}</b>\\n"
-        f"Stake: <b>{money(stake)}</b>\\n"
-        f"Return: <b>{money(float(stake) * float(combo['odds']))}</b>\\n"
-        f"Assessment: <b>{combo['score']}/100</b>"
+        f"{label}\n"
+        f"{compact_legs(combo['leg_names'])}\n"
+        f"{format_odds(combo['odds'])} | {money(stake)} → {money(float(stake) * float(combo['odds']))}"
     )
+
 
 
 def build_previewfootball_message(limit=5):
@@ -1007,8 +1015,7 @@ def build_previewfootball_message(limit=5):
     lines = [
         "🧠 <b>THE BLACK BOOK PREVIEW</b>",
         "",
-        f"Fixtures checked: <b>{len(events)}</b>",
-        f"Showing: <b>{min(limit, len(rows))}</b>",
+        f"Fixtures: <b>{len(events)}</b>",
         f"Post score: <b>{get_score_threshold()}</b>",
         "",
     ]
@@ -1023,13 +1030,12 @@ def build_previewfootball_message(limit=5):
             away = event.get("away_team", "Away")
             status = "✅ POST" if row["assessed_score"] >= get_score_threshold() else "❌ NO POST"
             value = setup.get("value")
-            risky = setup.get("risky")
+            pick = value or setup.get("safe")
 
             lines.append(
-                f"<b>{index}. {home} vs {away}</b>\\n"
-                f"{status} — Fixture <b>{row['assessed_score']}/100</b> | Best Combo <b>{setup['best_combo_score']}/100</b>\\n"
-                f"Value: {compact_legs(value['leg_names']) + ' @ ' + format_odds(value['odds']) if value else 'None'}\\n"
-                f"Risky: {compact_legs(risky['leg_names']) + ' @ ' + format_odds(risky['odds']) if risky else 'None'}\\n"
+                f"<b>{index}. {home} vs {away}</b>\n"
+                f"{status} | Fixture <b>{row['assessed_score']}/100</b> | Combo <b>{setup['best_combo_score']}/100</b>\n"
+                f"Pick: {compact_legs(pick['leg_names']) + ' @ ' + format_odds(pick['odds']) if pick else 'None'}\n"
             )
 
     if errors:
@@ -1037,7 +1043,7 @@ def build_previewfootball_message(limit=5):
         for err in errors[:4]:
             lines.append(f"• {err}")
 
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def build_settings_message():
@@ -1082,6 +1088,7 @@ def generate_football_builds(scored):
     return [section for section in sections if section.strip()]
 
 
+
 def build_football_setup_message(scored):
     event = scored["event"]
     setup = select_best_setup(scored)
@@ -1092,36 +1099,38 @@ def build_football_setup_message(scored):
     sport_key = event.get("sport_key_used", event.get("sport_key", "football"))
     kickoff = kickoff_text(event.get("commence_time"))
 
-    sections = generate_football_builds(scored)
-
-    if not sections:
-        return None
-
+    safe = setup.get("safe")
+    cover = setup.get("cover")
     value = setup.get("value")
     risky = setup.get("risky")
 
-    # Do not post weak-looking setups even if fixture score is OK.
     if not value and not risky:
         return None
 
-    bot_pick = "🟢 SAFE"
+    sections = []
+
+    if safe:
+        sections.append(build_combo_section("🟢 <b>SAFE</b>", safe, 10))
+
+    if cover and cover != safe:
+        sections.append(build_combo_section("🔵 <b>COVER</b>", cover, 4))
+
     if value:
-        bot_pick = "🟡 VALUE"
-    elif risky:
-        bot_pick = "🔴 RISKY"
+        sections.append(build_combo_section("🟡 <b>VALUE ⭐</b>", value, 10))
+
+    if risky and risky != value:
+        sections.append(build_combo_section("🔴 <b>RISKY ⚠️</b>", risky, 3))
+
+    bot_pick = "🟡 VALUE" if value else "🔴 RISKY"
 
     return (
         "📖 <b>THE BLACK BOOK</b>\n\n"
         f"<b>{home} vs {away}</b>\n"
-        f"🏆 {compact_league_name(sport_key)}\n"
-        f"⏰ {kickoff}\n\n"
-        f"🔥 Fixture: <b>{assessed_score}/100</b>\n"
-        f"🧠 Best Combo: <b>{setup['best_combo_score']}/100</b>\n"
-        f"📊 Rating: <b>{quality_label(assessed_score)}</b>\n\n"
-        "━━━━━━━━━━\n\n"
-        + "\n\n━━━━━━━━━━\n\n".join(sections)
-        + "\n\n━━━━━━━━━━\n\n"
-        "🎯 <b>BOT PICK</b>\n"
+        f"🏆 {compact_league_name(sport_key)} | ⏰ {kickoff}\n\n"
+        f"🔥 Fixture: <b>{assessed_score}/100</b> | 🧠 Combo: <b>{setup['best_combo_score']}/100</b>\n"
+        f"📊 <b>{quality_label(assessed_score)}</b>\n\n"
+        + "\n\n".join(sections)
+        + "\n\n🎯 <b>BOT PICK:</b> "
         f"{bot_pick}"
     )
 
