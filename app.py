@@ -7,8 +7,8 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.3.1
-# Team Win + Goals Assessment Engine
+# THE BLACK BOOK v0.3.2
+# Date Scan + Daily Acca
 # =========================
 
 BOT_TOKEN = (
@@ -19,7 +19,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.1"
+VERSION = "the-black-book-v0.3.2"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -36,6 +36,8 @@ CURRENT_MIN_FOOTBALL_SCORE = MIN_FOOTBALL_SCORE
 MIN_VALUE_COMBO_SCORE = int(os.environ.get("MIN_VALUE_COMBO_SCORE", "58") or 58)
 MIN_RISKY_COMBO_SCORE = int(os.environ.get("MIN_RISKY_COMBO_SCORE", "55") or 55)
 MAX_COMBO_LEGS = int(os.environ.get("MAX_COMBO_LEGS", "3") or 3)
+DAILY_ACCA_MIN_SCORE = int(os.environ.get("DAILY_ACCA_MIN_SCORE", "70") or 70)
+DAILY_ACCA_MAX_LEGS = int(os.environ.get("DAILY_ACCA_MAX_LEGS", "4") or 4)
 
 # Keep this controlled so the free Odds API credits do not get burned.
 FOOTBALL_SPORT_KEYS = [
@@ -186,6 +188,56 @@ def is_event_today(event):
     start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     return start <= event_dt < end
+
+
+def parse_scan_date(args_text=""):
+    raw = str(args_text or "").strip().lower()
+
+    if not raw:
+        return now_utc().date(), "today"
+
+    token = raw.split()[0].replace("/", ".").replace("-", ".")
+
+    if token in ["today", "todays"]:
+        return now_utc().date(), "today"
+
+    if token in ["tomorrow", "tmr", "tmrw"]:
+        return (now_utc() + timedelta(days=1)).date(), "tomorrow"
+
+    parts = [p for p in token.split(".") if p]
+
+    try:
+        if len(parts) == 3:
+            if len(parts[0]) == 4:
+                year = int(parts[0])
+                month = int(parts[1])
+                day = int(parts[2])
+            else:
+                day = int(parts[0])
+                month = int(parts[1])
+                year = int(parts[2])
+                if year < 100:
+                    year += 2000
+
+            return datetime(year, month, day, tzinfo=timezone.utc).date(), f"{day:02d}.{month:02d}.{str(year)[-2:]}"
+    except Exception:
+        pass
+
+    return now_utc().date(), "today"
+
+
+def event_is_on_date(event, target_date):
+    event_dt = parse_event_datetime(event.get("commence_time"))
+    if not event_dt:
+        return False
+    return event_dt.date() == target_date
+
+
+def scan_date_label(target_date):
+    try:
+        return target_date.strftime("%d %b %Y")
+    except Exception:
+        return "Selected date"
 
 
 def compact_league_name(sport_key):
@@ -342,7 +394,7 @@ def get_available_soccer_sports():
     return soccer
 
 
-def fetch_football_odds():
+def fetch_football_odds(target_date=None):
     all_events_by_id = {}
     errors = []
 
@@ -366,7 +418,8 @@ def fetch_football_odds():
                     continue
 
                 for event in data:
-                    if not is_event_today(event):
+                    selected_date = target_date or now_utc().date()
+                    if not event_is_on_date(event, selected_date):
                         continue
 
                     event_id = event.get("id") or f"{event.get('home_team')}|{event.get('away_team')}|{event.get('commence_time')}"
@@ -991,8 +1044,8 @@ def build_combo_section(label, combo, stake):
 
 
 
-def build_previewfootball_message(limit=5):
-    events, errors = fetch_football_odds()
+def build_previewfootball_message(limit=5, target_date=None):
+    events, errors = fetch_football_odds(target_date)
     rows = []
 
     for event in events:
@@ -1015,6 +1068,7 @@ def build_previewfootball_message(limit=5):
     lines = [
         "🧠 <b>THE BLACK BOOK PREVIEW</b>",
         "",
+        f"Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
         f"Fixtures: <b>{len(events)}</b>",
         f"Post score: <b>{get_score_threshold()}</b>",
         "",
@@ -1139,8 +1193,8 @@ def build_football_setup_message(scored):
 # Scanner runner
 # =========================
 
-def scan_football():
-    events, errors = fetch_football_odds()
+def scan_football(target_date=None):
+    events, errors = fetch_football_odds(target_date)
     scored_events = []
 
     for event in events:
@@ -1170,8 +1224,8 @@ def scan_football():
     return scored_events[:MAX_FOOTBALL_POSTS], errors, len(events)
 
 
-def run_football_scan(post_to_topic=True):
-    setups, errors, scanned_count = scan_football()
+def run_football_scan(post_to_topic=True, target_date=None):
+    setups, errors, scanned_count = scan_football(target_date)
 
     posts_sent = 0
     send_errors = []
@@ -1187,6 +1241,7 @@ def run_football_scan(post_to_topic=True):
 
     summary = (
         "📖 <b>THE BLACK BOOK SCAN</b>\n\n"
+        f"📅 Date: <b>{scan_date_label(target_date or now_utc().date())}</b>\n"
         f"⚽ Fixtures: <b>{scanned_count}</b>\n"
         f"🔥 Setups: <b>{len(setups)}</b>\n"
         f"📤 Posted: <b>{posts_sent}</b>\n"
@@ -1211,8 +1266,8 @@ def run_football_scan(post_to_topic=True):
     }
 
 
-def scan_all_football_scores(limit=10):
-    events, errors = fetch_football_odds()
+def scan_all_football_scores(limit=10, target_date=None):
+    events, errors = fetch_football_odds(target_date)
     scored_events = []
 
     for event in events:
@@ -1224,13 +1279,14 @@ def scan_all_football_scores(limit=10):
     return scored_events[:limit], errors, len(events)
 
 
-def build_showallfootball_message(limit=10):
-    scored_events, errors, scanned_count = scan_all_football_scores(limit=limit)
+def build_showallfootball_message(limit=10, target_date=None):
+    scored_events, errors, scanned_count = scan_all_football_scores(limit=limit, target_date=target_date)
 
     lines = [
         "⚽ <b>THE BLACK BOOK FOOTBALL SCORES</b>",
         "",
-        f"Today fixtures scanned: <b>{scanned_count}</b>",
+        f"Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
+        f"Fixtures scanned: <b>{scanned_count}</b>",
         f"Showing top: <b>{len(scored_events)}</b>",
         f"Post threshold: <b>{get_score_threshold()}</b>",
         "",
@@ -1262,6 +1318,76 @@ def build_showallfootball_message(limit=10):
     return "\n".join(lines)
 
 
+def build_daily_acca_message(target_date=None):
+    events, errors = fetch_football_odds(target_date)
+    candidates = []
+
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+
+        setup = select_best_setup(scored)
+        assessed_score = fixture_assessment_score(scored, setup)
+        value = setup.get("value")
+
+        if not value:
+            continue
+
+        if assessed_score < DAILY_ACCA_MIN_SCORE:
+            continue
+
+        candidates.append({
+            "event": event,
+            "value": value,
+            "assessment_score": assessed_score,
+        })
+
+    candidates.sort(key=lambda row: row["assessment_score"], reverse=True)
+    selected = candidates[:DAILY_ACCA_MAX_LEGS]
+
+    lines = [
+        "🧾 <b>THE BLACK BOOK DAILY ACCA</b>",
+        "",
+        f"Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
+        f"Fixtures checked: <b>{len(events)}</b>",
+        f"Min score: <b>{DAILY_ACCA_MIN_SCORE}</b>",
+        "",
+    ]
+
+    if len(selected) < 2:
+        lines.append("Not enough strong value picks for a daily acca.")
+        return "\n".join(lines)
+
+    acca_odds = 1.0
+    for index, row in enumerate(selected, start=1):
+        event = row["event"]
+        value = row["value"]
+        home = event.get("home_team", "Home")
+        away = event.get("away_team", "Away")
+        acca_odds *= float(value["odds"])
+
+        lines.append(
+            f"<b>{index}. {home} vs {away}</b>\n"
+            f"{compact_legs(value['leg_names'])}\n"
+            f"{format_odds(value['odds'])} | Score <b>{row['assessment_score']}/100</b>\n"
+        )
+
+    acca_odds = round(acca_odds, 2)
+    stake = 5
+
+    lines.extend([
+        "━━━━━━━━━━",
+        f"Total odds: <b>{format_odds(acca_odds)}</b>",
+        f"Stake: <b>{money(stake)}</b>",
+        f"Return: <b>{money(stake * acca_odds)}</b>",
+        "",
+        "Small stake only. Accas are higher risk."
+    ])
+
+    return "\n".join(lines)
+
+
 # =========================
 # Bot messages
 # =========================
@@ -1274,7 +1400,7 @@ def build_start_message():
         "<b>Main Commands</b>\n"
         "• /scanfootball - Run football scanner and post qualifying setups\n"
         "• /previewfootball - Preview assessed fixtures before posting\n"
-        "• /showallfootball - Show today's fixture scores\n\n"
+        "• /showallfootball - Show selected date fixture scores\n• /dailyacca - Build multi-game value acca\n\n"
         "<b>Settings</b>\n"
         "• /score - View current post score\n"
         "• /score 60 - Change post score\n"
@@ -1294,7 +1420,7 @@ def build_help_message():
         "<b>Football</b>\n"
         "• /scanfootball - Scan football and post qualifying setups\n"
         "• /previewfootball - Show assessed fixtures and candidate combos\n"
-        "• /showallfootball - Show today fixture scores\n\n"
+        "• /showallfootball - Show selected date fixture scores\n• /dailyacca - Build multi-game value acca\n\n"
         "<b>Controls</b>\n"
         "• /score - Show current post score\n"
         "• /score 60 - Lower/raise post threshold\n"
@@ -1594,12 +1720,25 @@ def scan_football_route():
 
 @app.route("/preview-football", methods=["GET", "POST"])
 def preview_football_route():
-    message = build_previewfootball_message(limit=8)
+    target_date, _ = parse_scan_date(request.args.get("date", ""))
+    message = build_previewfootball_message(limit=8, target_date=target_date)
 
     return jsonify({
         "ok": True,
         "version": VERSION,
         "preview": message,
+    }), 200
+
+
+@app.route("/daily-acca", methods=["GET", "POST"])
+def daily_acca_route():
+    target_date, _ = parse_scan_date(request.args.get("date", ""))
+    message = build_daily_acca_message(target_date=target_date)
+
+    return jsonify({
+        "ok": True,
+        "version": VERSION,
+        "acca": message,
     }), 200
 
 
@@ -1659,8 +1798,23 @@ def telegram_webhook():
             reply = build_chatid_message(chat_id, thread_id)
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
+        elif lower_text.startswith("/previewtomorrow"):
+            target_date, _ = parse_scan_date("tomorrow")
+            reply = build_previewfootball_message(limit=8, target_date=target_date)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
         elif lower_text.startswith("/previewfootball") or lower_text.startswith("/preview"):
-            reply = build_previewfootball_message(limit=5)
+            command = text.split()[0]
+            args_text = text[len(command):].strip()
+            target_date, _ = parse_scan_date(args_text)
+            reply = build_previewfootball_message(limit=8, target_date=target_date)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/dailyacca") or lower_text.startswith("/acca"):
+            command = text.split()[0]
+            args_text = text[len(command):].strip()
+            target_date, _ = parse_scan_date(args_text)
+            reply = build_daily_acca_message(target_date=target_date)
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/settings"):
@@ -1677,15 +1831,26 @@ def telegram_webhook():
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/showallfootball") or lower_text.startswith("/showfootball"):
-            reply = build_showallfootball_message(limit=10)
+            command = text.split()[0]
+            args_text = text[len(command):].strip()
+            target_date, _ = parse_scan_date(args_text)
+            reply = build_showallfootball_message(limit=10, target_date=target_date)
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/sports"):
             reply = build_sports_message()
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
+        elif lower_text.startswith("/scantomorrow"):
+            target_date, _ = parse_scan_date("tomorrow")
+            result = run_football_scan(post_to_topic=True, target_date=target_date)
+            tg_response = send_telegram_message(chat_id, result["summary"], thread_id=thread_id)
+
         elif lower_text.startswith("/scanfootball") or lower_text.startswith("/scan"):
-            result = run_football_scan(post_to_topic=True)
+            command = text.split()[0]
+            args_text = text[len(command):].strip()
+            target_date, _ = parse_scan_date(args_text)
+            result = run_football_scan(post_to_topic=True, target_date=target_date)
             tg_response = send_telegram_message(chat_id, result["summary"], thread_id=thread_id)
 
         else:
