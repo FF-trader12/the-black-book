@@ -3,12 +3,13 @@ import os
 import requests
 import itertools
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.3.2
-# Date Scan + Daily Acca
+# THE BLACK BOOK v0.3.3
+# Safe Value Risky Daily Acca + UK Time
 # =========================
 
 BOT_TOKEN = (
@@ -19,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.2"
+VERSION = "the-black-book-v0.3.3"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -166,9 +167,11 @@ def kickoff_text(commence_time):
 
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        return dt.strftime("%d %b %H:%M UTC")
+        uk_dt = dt.astimezone(ZoneInfo("Europe/London"))
+        return uk_dt.strftime("%d %b %H:%M (UK Time)")
     except Exception:
         return raw
+
 
 def parse_event_datetime(commence_time):
     raw = str(commence_time or "").strip()
@@ -1318,9 +1321,54 @@ def build_showallfootball_message(limit=10, target_date=None):
     return "\n".join(lines)
 
 
+def acca_line(row, combo_type):
+    event = row["event"]
+    combo = row[combo_type]
+    home = event.get("home_team", "Home")
+    away = event.get("away_team", "Away")
+    kickoff = kickoff_text(event.get("commence_time"))
+
+    return (
+        f"<b>{home} vs {away}</b>\n"
+        f"🕒 {kickoff}\n"
+        f"{compact_legs(combo['leg_names'])}\n"
+        f"{format_odds(combo['odds'])} | Score <b>{row['assessment_score']}/100</b>"
+    )
+
+
+def build_acca_section(title, rows, combo_type, stake):
+    selected = [row for row in rows if row.get(combo_type)]
+    selected = selected[:DAILY_ACCA_MAX_LEGS]
+
+    if len(selected) < 2:
+        return (
+            f"{title}\n"
+            "Not enough qualifying picks."
+        )
+
+    total_odds = 1.0
+    lines = [title, ""]
+
+    for index, row in enumerate(selected, start=1):
+        combo = row[combo_type]
+        total_odds *= float(combo["odds"])
+        lines.append(f"<b>{index}.</b> {acca_line(row, combo_type)}\n")
+
+    total_odds = round(total_odds, 2)
+
+    lines.extend([
+        "━━━━━━━━━━",
+        f"Total odds: <b>{format_odds(total_odds)}</b>",
+        f"Stake: <b>{money(stake)}</b>",
+        f"Return: <b>{money(float(stake) * float(total_odds))}</b>",
+    ])
+
+    return "\n".join(lines)
+
+
 def build_daily_acca_message(target_date=None):
     events, errors = fetch_football_odds(target_date)
-    candidates = []
+    rows = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1329,61 +1377,57 @@ def build_daily_acca_message(target_date=None):
 
         setup = select_best_setup(scored)
         assessed_score = fixture_assessment_score(scored, setup)
-        value = setup.get("value")
-
-        if not value:
-            continue
 
         if assessed_score < DAILY_ACCA_MIN_SCORE:
             continue
 
-        candidates.append({
+        rows.append({
             "event": event,
-            "value": value,
             "assessment_score": assessed_score,
+            "safe": setup.get("safe"),
+            "value": setup.get("value"),
+            "risky": setup.get("risky"),
         })
 
-    candidates.sort(key=lambda row: row["assessment_score"], reverse=True)
-    selected = candidates[:DAILY_ACCA_MAX_LEGS]
+    rows.sort(key=lambda row: row["assessment_score"], reverse=True)
 
     lines = [
-        "🧾 <b>THE BLACK BOOK DAILY ACCA</b>",
+        "🧾 <b>THE BLACK BOOK DAILY ACCAS</b>",
         "",
         f"Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
         f"Fixtures checked: <b>{len(events)}</b>",
+        f"Qualifying fixtures: <b>{len(rows)}</b>",
         f"Min score: <b>{DAILY_ACCA_MIN_SCORE}</b>",
         "",
     ]
 
-    if len(selected) < 2:
-        lines.append("Not enough strong value picks for a daily acca.")
+    if len(rows) < 2:
+        lines.append("Not enough strong picks to build daily accas.")
+        if errors:
+            lines.append("")
+            lines.append("<b>API notes:</b>")
+            for err in errors[:4]:
+                lines.append(f"• {err}")
         return "\n".join(lines)
 
-    acca_odds = 1.0
-    for index, row in enumerate(selected, start=1):
-        event = row["event"]
-        value = row["value"]
-        home = event.get("home_team", "Home")
-        away = event.get("away_team", "Away")
-        acca_odds *= float(value["odds"])
+    lines.append(build_acca_section("🟢 <b>SAFE ACCA</b>", rows, "safe", 2))
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("")
+    lines.append(build_acca_section("🟡 <b>VALUE ACCA ⭐</b>", rows, "value", 1))
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("")
+    lines.append(build_acca_section("🔴 <b>RISKY ACCA ⚠️</b>", rows, "risky", 1))
 
-        lines.append(
-            f"<b>{index}. {home} vs {away}</b>\n"
-            f"{compact_legs(value['leg_names'])}\n"
-            f"{format_odds(value['odds'])} | Score <b>{row['assessment_score']}/100</b>\n"
-        )
+    if errors:
+        lines.append("")
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
 
-    acca_odds = round(acca_odds, 2)
-    stake = 5
-
-    lines.extend([
-        "━━━━━━━━━━",
-        f"Total odds: <b>{format_odds(acca_odds)}</b>",
-        f"Stake: <b>{money(stake)}</b>",
-        f"Return: <b>{money(stake * acca_odds)}</b>",
-        "",
-        "Small stake only. Accas are higher risk."
-    ])
+    lines.append("")
+    lines.append("<i>Accas are higher risk. Keep stakes small.</i>")
 
     return "\n".join(lines)
 
@@ -1400,7 +1444,7 @@ def build_start_message():
         "<b>Main Commands</b>\n"
         "• /scanfootball - Run football scanner and post qualifying setups\n"
         "• /previewfootball - Preview assessed fixtures before posting\n"
-        "• /showallfootball - Show selected date fixture scores\n• /dailyacca - Build multi-game value acca\n\n"
+        "• /showallfootball - Show selected date fixture scores\n• /dailyacca 20.06.26 - Safe/Value/Risky daily accas\n\n"
         "<b>Settings</b>\n"
         "• /score - View current post score\n"
         "• /score 60 - Change post score\n"
@@ -1420,7 +1464,7 @@ def build_help_message():
         "<b>Football</b>\n"
         "• /scanfootball - Scan football and post qualifying setups\n"
         "• /previewfootball - Show assessed fixtures and candidate combos\n"
-        "• /showallfootball - Show selected date fixture scores\n• /dailyacca - Build multi-game value acca\n\n"
+        "• /showallfootball - Show selected date fixture scores\n• /dailyacca 20.06.26 - Safe/Value/Risky daily accas\n\n"
         "<b>Controls</b>\n"
         "• /score - Show current post score\n"
         "• /score 60 - Lower/raise post threshold\n"
@@ -1808,6 +1852,11 @@ def telegram_webhook():
             args_text = text[len(command):].strip()
             target_date, _ = parse_scan_date(args_text)
             reply = build_previewfootball_message(limit=8, target_date=target_date)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow"):
+            target_date, _ = parse_scan_date("tomorrow")
+            reply = build_daily_acca_message(target_date=target_date)
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/dailyacca") or lower_text.startswith("/acca"):
