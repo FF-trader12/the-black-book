@@ -6,8 +6,8 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.2.5
-# Market Inspector + Score Control + Setup Trial Engine
+# THE BLACK BOOK v0.3.0
+# Assessment Engine
 # =========================
 
 BOT_TOKEN = (
@@ -18,7 +18,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.2.5"
+VERSION = "the-black-book-v0.3.0"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -32,6 +32,9 @@ RUGBY_TOPIC_ID = int(os.environ.get("RUGBY_TOPIC_ID", "15") or 15)
 MIN_FOOTBALL_SCORE = int(os.environ.get("MIN_FOOTBALL_SCORE", "65") or 65)
 MAX_FOOTBALL_POSTS = int(os.environ.get("MAX_FOOTBALL_POSTS", "3") or 3)
 CURRENT_MIN_FOOTBALL_SCORE = MIN_FOOTBALL_SCORE
+MIN_VALUE_COMBO_SCORE = int(os.environ.get("MIN_VALUE_COMBO_SCORE", "58") or 58)
+MIN_RISKY_COMBO_SCORE = int(os.environ.get("MIN_RISKY_COMBO_SCORE", "55") or 55)
+MAX_COMBO_LEGS = int(os.environ.get("MAX_COMBO_LEGS", "3") or 3)
 
 # Keep this controlled so the free Odds API credits do not get burned.
 FOOTBALL_SPORT_KEYS = [
@@ -597,6 +600,457 @@ def score_football_event(event):
     }
 
 
+
+# =========================
+# Assessment engine
+# =========================
+
+def make_leg(name, odds, leg_type, confidence, bookmaker=None, tags=None):
+    if odds is None:
+        return None
+
+    try:
+        odds = float(odds)
+    except Exception:
+        return None
+
+    if odds <= 1:
+        return None
+
+    return {
+        "name": name,
+        "odds": odds,
+        "type": leg_type,
+        "confidence": int(confidence),
+        "bookmaker": bookmaker or "Market",
+        "tags": tags or [],
+    }
+
+
+def build_candidate_legs(scored):
+    prices = scored["prices"]
+    fav = scored["favourite"]
+
+    legs = []
+
+    home = prices.get("home")
+    away = prices.get("away")
+    draw = prices.get("draw")
+    over_25 = prices.get("over_25")
+    under_25 = prices.get("under_25")
+    btts_yes = prices.get("btts_yes")
+    btts_no = prices.get("btts_no")
+
+    fav_team = fav["team"]
+    fav_odds = fav["odds"]
+    fav_prob = implied_probability(fav_odds)
+
+    if fav_prob >= 0.70:
+        fav_conf = 88
+    elif fav_prob >= 0.62:
+        fav_conf = 80
+    elif fav_prob >= 0.54:
+        fav_conf = 68
+    else:
+        fav_conf = 52
+
+    leg = make_leg(
+        f"{fav_team} To Win",
+        fav_odds,
+        "winner",
+        fav_conf,
+        fav.get("bookmaker"),
+        tags=["safe", "main"],
+    )
+    if leg:
+        legs.append(leg)
+
+    if draw:
+        leg = make_leg(
+            "Draw",
+            draw["price"],
+            "draw",
+            42 if draw["price"] >= 3.0 else 55,
+            draw["bookmaker"],
+            tags=["cover", "hedge"],
+        )
+        if leg:
+            legs.append(leg)
+
+    # Outsider win only as a risky candidate.
+    if home and away:
+        outsider = home if home["price"] > away["price"] else away
+        leg = make_leg(
+            f"{outsider['name']} To Win",
+            outsider["price"],
+            "outsider",
+            30,
+            outsider["bookmaker"],
+            tags=["risky"],
+        )
+        if leg:
+            legs.append(leg)
+
+    if over_25:
+        over_conf = 70 if over_25["price"] <= 2.10 else 58
+        leg = make_leg(
+            "Over 2.5 Goals",
+            over_25["price"],
+            "goals",
+            over_conf,
+            over_25["bookmaker"],
+            tags=["goals", "value"],
+        )
+        if leg:
+            legs.append(leg)
+
+    if under_25:
+        under_conf = 65 if under_25["price"] <= 2.10 else 54
+        leg = make_leg(
+            "Under 2.5 Goals",
+            under_25["price"],
+            "goals",
+            under_conf,
+            under_25["bookmaker"],
+            tags=["cover", "goals"],
+        )
+        if leg:
+            legs.append(leg)
+
+    if btts_yes:
+        yes_conf = 68 if btts_yes["price"] <= 2.10 else 56
+        leg = make_leg(
+            "BTTS Yes",
+            btts_yes["price"],
+            "btts",
+            yes_conf,
+            btts_yes["bookmaker"],
+            tags=["value", "goals"],
+        )
+        if leg:
+            legs.append(leg)
+
+    if btts_no:
+        no_conf = 62 if btts_no["price"] <= 2.20 else 52
+        leg = make_leg(
+            "BTTS No",
+            btts_no["price"],
+            "btts",
+            no_conf,
+            btts_no["bookmaker"],
+            tags=["cover"],
+        )
+        if leg:
+            legs.append(leg)
+
+    return legs
+
+
+def combo_has_conflict(legs):
+    names = {leg["name"] for leg in legs}
+    types = [leg["type"] for leg in legs]
+
+    if "Over 2.5 Goals" in names and "Under 2.5 Goals" in names:
+        return True
+
+    if "BTTS Yes" in names and "BTTS No" in names:
+        return True
+
+    # Avoid multiple match result outcomes in one same-game combo.
+    result_types = {"winner", "draw", "outsider"}
+    if sum(1 for leg in legs if leg["type"] in result_types) > 1:
+        return True
+
+    return False
+
+
+def combo_correlation_score(legs):
+    names = {leg["name"] for leg in legs}
+    types = {leg["type"] for leg in legs}
+
+    score = 50
+
+    if "winner" in types and "goals" in types:
+        score += 12
+    if "goals" in types and "btts" in types and "Over 2.5 Goals" in names and "BTTS Yes" in names:
+        score += 14
+    if "winner" in types and "btts" in types and "BTTS No" in names:
+        score += 6
+    if "draw" in types and "Under 2.5 Goals" in names:
+        score += 8
+    if "outsider" in types:
+        score -= 12
+
+    return max(0, min(score, 100))
+
+
+def combo_value_score(odds):
+    # Rewards odds that are usable, not too short, not completely wild.
+    if odds < 1.35:
+        return 15
+    if odds < 1.70:
+        return 42
+    if odds < 2.50:
+        return 65
+    if odds < 4.50:
+        return 82
+    if odds < 8.00:
+        return 74
+    if odds < 13.00:
+        return 58
+    return 35
+
+
+def combo_risk_penalty(legs, odds):
+    penalty = 0
+
+    if len(legs) == 2:
+        penalty += 8
+    elif len(legs) >= 3:
+        penalty += 18
+
+    if odds >= 8:
+        penalty += 8
+    if odds >= 13:
+        penalty += 18
+
+    if any(leg["type"] == "outsider" for leg in legs):
+        penalty += 15
+
+    return penalty
+
+
+def assess_combo(legs):
+    if not legs or combo_has_conflict(legs):
+        return None
+
+    odds = 1.0
+    for leg in legs:
+        odds *= float(leg["odds"])
+
+    odds = round(odds, 2)
+
+    confidence = sum(leg["confidence"] for leg in legs) / len(legs)
+    value = combo_value_score(odds)
+    correlation = combo_correlation_score(legs)
+    risk_penalty = combo_risk_penalty(legs, odds)
+
+    # Balanced score: confidence matters most, but value/correlation matter.
+    final_score = round((confidence * 0.50) + (value * 0.28) + (correlation * 0.22) - risk_penalty)
+
+    if final_score < 0:
+        final_score = 0
+    if final_score > 100:
+        final_score = 100
+
+    return {
+        "legs": legs,
+        "leg_names": [leg["name"] for leg in legs],
+        "odds": odds,
+        "score": int(final_score),
+        "confidence_component": int(confidence),
+        "value_component": int(value),
+        "correlation_component": int(correlation),
+        "risk_penalty": int(risk_penalty),
+        "type_count": len(legs),
+    }
+
+
+def generate_candidate_combos(scored):
+    legs = build_candidate_legs(scored)
+    combos = []
+
+    max_legs = max(1, min(MAX_COMBO_LEGS, 3))
+
+    for size in range(1, max_legs + 1):
+        for parts in itertools.combinations(legs, size):
+            assessed = assess_combo(list(parts))
+            if assessed:
+                combos.append(assessed)
+
+    # Remove duplicate leg name sets, keep highest score.
+    unique = {}
+    for combo in combos:
+        key = tuple(sorted(combo["leg_names"]))
+        if key not in unique or combo["score"] > unique[key]["score"]:
+            unique[key] = combo
+
+    combos = list(unique.values())
+    combos.sort(key=lambda item: (item["score"], item["odds"]), reverse=True)
+    return combos
+
+
+def select_best_setup(scored):
+    combos = generate_candidate_combos(scored)
+    fav = scored["favourite"]
+    fav_name = f"{fav['team']} To Win"
+
+    singles = [c for c in combos if c["type_count"] == 1]
+    doubles = [c for c in combos if c["type_count"] == 2]
+    trebles = [c for c in combos if c["type_count"] >= 3]
+
+    # SAFE = strongest low-risk single, usually favourite win.
+    safe_candidates = [
+        c for c in singles
+        if c["odds"] <= 2.20 and c["score"] >= 45 and "outsider" not in [leg["type"] for leg in c["legs"]]
+    ]
+    safe = max(safe_candidates, key=lambda c: (c["score"], -c["odds"]), default=None)
+
+    # Prefer favourite win as safe if it exists and is sensible.
+    fav_safe = next((c for c in singles if c["leg_names"] == [fav_name]), None)
+    if fav_safe and fav_safe["score"] >= 45:
+        safe = fav_safe
+
+    # COVER = lower-risk protection related to the safe. Prefer Draw if safe is favourite win.
+    cover = None
+    if safe and fav_name in safe["leg_names"]:
+        cover = next((c for c in singles if c["leg_names"] == ["Draw"]), None)
+
+    if not cover:
+        cover_candidates = [
+            c for c in singles
+            if c != safe and c["odds"] <= 5.50 and any(tag in ["cover", "hedge"] for leg in c["legs"] for tag in leg.get("tags", []))
+        ]
+        cover = max(cover_candidates, key=lambda c: (c["score"], c["odds"]), default=None)
+
+    # VALUE = best risk/reward double or strong single.
+    value_candidates = [
+        c for c in doubles
+        if 1.80 <= c["odds"] <= 5.50 and c["score"] >= MIN_VALUE_COMBO_SCORE
+    ]
+    if not value_candidates:
+        value_candidates = [
+            c for c in singles
+            if 1.75 <= c["odds"] <= 3.50 and c != safe and c["score"] >= 50
+        ]
+    value = max(value_candidates, key=lambda c: (c["score"], c["odds"]), default=None)
+
+    # RISKY = best higher-upside acca, but not a random outsider unless it scores well.
+    risky_candidates = [
+        c for c in trebles
+        if 3.50 <= c["odds"] <= 12.00 and c["score"] >= MIN_RISKY_COMBO_SCORE
+    ]
+    if not risky_candidates:
+        risky_candidates = [
+            c for c in doubles
+            if 3.00 <= c["odds"] <= 9.00 and c["score"] >= MIN_RISKY_COMBO_SCORE
+        ]
+    risky = max(risky_candidates, key=lambda c: (c["score"], c["odds"]), default=None)
+
+    best_combo_score = max([c["score"] for c in combos], default=0)
+
+    return {
+        "safe": safe,
+        "cover": cover,
+        "value": value,
+        "risky": risky,
+        "combos": combos,
+        "best_combo_score": best_combo_score,
+    }
+
+
+def fixture_assessment_score(scored, setup):
+    score = scored["score"]
+
+    if setup.get("value"):
+        score += int((setup["value"]["score"] - 50) * 0.20)
+    else:
+        score -= 8
+
+    if setup.get("risky"):
+        score += int((setup["risky"]["score"] - 50) * 0.10)
+    else:
+        score -= 5
+
+    if setup.get("safe") and setup["safe"]["score"] >= 55:
+        score += 4
+
+    return max(0, min(100, score))
+
+
+def build_combo_section(label, combo, stake):
+    if not combo:
+        return ""
+
+    return (
+        f"{label}\\n"
+        f"{compact_legs(combo['leg_names'])}\\n\\n"
+        f"Odds: <b>{format_odds(combo['odds'])}</b>\\n"
+        f"Stake: <b>{money(stake)}</b>\\n"
+        f"Return: <b>{money(float(stake) * float(combo['odds']))}</b>\\n"
+        f"Assessment: <b>{combo['score']}/100</b>"
+    )
+
+
+def build_previewfootball_message(limit=5):
+    events, errors = fetch_football_odds()
+    rows = []
+
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+
+        setup = select_best_setup(scored)
+        assessed_score = fixture_assessment_score(scored, setup)
+
+        rows.append({
+            "event": event,
+            "scored": scored,
+            "setup": setup,
+            "assessed_score": assessed_score,
+        })
+
+    rows.sort(key=lambda r: (r["assessed_score"], r["setup"]["best_combo_score"]), reverse=True)
+
+    lines = [
+        "🧠 <b>THE BLACK BOOK PREVIEW</b>",
+        "",
+        f"Fixtures checked: <b>{len(events)}</b>",
+        f"Showing: <b>{min(limit, len(rows))}</b>",
+        f"Post score: <b>{get_score_threshold()}</b>",
+        "",
+    ]
+
+    if not rows:
+        lines.append("No scorable fixtures found.")
+    else:
+        for index, row in enumerate(rows[:limit], start=1):
+            event = row["event"]
+            setup = row["setup"]
+            home = event.get("home_team", "Home")
+            away = event.get("away_team", "Away")
+            status = "✅ POST" if row["assessed_score"] >= get_score_threshold() else "❌ NO POST"
+            value = setup.get("value")
+            risky = setup.get("risky")
+
+            lines.append(
+                f"<b>{index}. {home} vs {away}</b>\\n"
+                f"{status} — Fixture <b>{row['assessed_score']}/100</b> | Best Combo <b>{setup['best_combo_score']}/100</b>\\n"
+                f"Value: {compact_legs(value['leg_names']) + ' @ ' + format_odds(value['odds']) if value else 'None'}\\n"
+                f"Risky: {compact_legs(risky['leg_names']) + ' @ ' + format_odds(risky['odds']) if risky else 'None'}\\n"
+            )
+
+    if errors:
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
+
+    return "\\n".join(lines)
+
+
+def build_settings_message():
+    return (
+        "⚙️ <b>THE BLACK BOOK SETTINGS</b>\\n\\n"
+        f"Version: <b>{VERSION}</b>\\n"
+        f"Post score: <b>{get_score_threshold()}</b>\\n"
+        f"Max posts: <b>{MAX_FOOTBALL_POSTS}</b>\\n"
+        f"Max combo legs: <b>{MAX_COMBO_LEGS}</b>\\n"
+        f"Value combo min: <b>{MIN_VALUE_COMBO_SCORE}</b>\\n"
+        f"Risky combo min: <b>{MIN_RISKY_COMBO_SCORE}</b>\\n"
+        f"Sports: <code>{','.join(FOOTBALL_SPORT_KEYS)}</code>"
+    )
+
 # =========================
 # Bet setup generation
 # =========================
@@ -615,128 +1069,22 @@ def build_bet_section(label, stake, odds, legs, purpose, bookmaker=None, include
 
 
 def generate_football_builds(scored):
-    prices = scored["prices"]
-    fav = scored["favourite"]
-
-    fav_team = fav["team"]
-    fav_odds = fav["odds"]
-
-    home_price = prices.get("home")
-    away_price = prices.get("away")
-    draw_price = prices.get("draw")
-    over_25 = prices.get("over_25")
-    under_25 = prices.get("under_25")
-    btts_yes = prices.get("btts_yes")
-    btts_no = prices.get("btts_no")
+    setup = select_best_setup(scored)
 
     sections = []
 
-    # 🟢 SAFE = main sensible angle.
-    safe_legs = [f"{fav_team} To Win"]
-    safe_odds = fav_odds
-
-    sections.append(build_bet_section(
-        "🟢 <b>SAFE</b>",
-        10,
-        safe_odds,
-        safe_legs,
-        "Main sensible bet.",
-        bookmaker=fav.get("bookmaker"),
-        include=True,
-    ))
-
-    # 🔵 COVER = protection for the SAFE bet.
-    # If SAFE is favourite to win, cover is usually Draw. If no draw, use outsider win.
-    cover_legs = []
-    cover_odds = None
-    cover_bookmaker = None
-
-    if draw_price:
-        cover_legs = ["Draw"]
-        cover_odds = draw_price["price"]
-        cover_bookmaker = draw_price["bookmaker"]
-    elif home_price and away_price:
-        outsider = home_price if home_price["price"] > away_price["price"] else away_price
-        cover_legs = [f"{outsider['name']} To Win"]
-        cover_odds = outsider["price"]
-        cover_bookmaker = outsider["bookmaker"]
-
-    sections.append(build_bet_section(
-        "🔵 <b>COVER</b>",
-        4,
-        cover_odds,
-        cover_legs,
-        "Cover for the safe bet.",
-        bookmaker=cover_bookmaker,
-        include=cover_odds is not None,
-    ))
-
-    # 🟡 VALUE = best reasonable value angle, usually 1-2 legs.
-    value_legs = []
-    value_odds = None
-    value_bookmaker = "Estimated"
-
-    if fav_odds and over_25:
-        value_legs = [f"{fav_team} To Win", "Over 2.5 Goals"]
-        value_odds = round(fav_odds * over_25["price"], 2)
-    elif fav_odds and btts_yes:
-        value_legs = [f"{fav_team} To Win", "BTTS Yes"]
-        value_odds = round(fav_odds * btts_yes["price"], 2)
-    elif over_25:
-        value_legs = ["Over 2.5 Goals"]
-        value_odds = over_25["price"]
-        value_bookmaker = over_25["bookmaker"]
-    elif btts_yes:
-        value_legs = ["BTTS Yes"]
-        value_odds = btts_yes["price"]
-        value_bookmaker = btts_yes["bookmaker"]
-    elif 1.75 <= fav_odds <= 3.20:
-        value_legs = [f"{fav_team} To Win"]
-        value_odds = fav_odds
-        value_bookmaker = fav["bookmaker"]
-
-    sections.append(build_bet_section(
-        "🟡 <b>VALUE ⭐</b>",
-        10,
-        value_odds,
-        value_legs,
-        "Best value angle.",
-        bookmaker=value_bookmaker,
-        include=value_odds is not None,
-    ))
-
-    # 🔴 RISKY = the actual accumulator / higher-return play.
-    risky_legs = []
-    risky_odds = None
-    risky_bookmaker = "Estimated Acca"
-
-    if fav_odds and over_25 and btts_yes:
-        risky_legs = [f"{fav_team} To Win", "Over 2.5 Goals", "BTTS Yes"]
-        risky_odds = round(fav_odds * over_25["price"] * btts_yes["price"], 2)
-    elif fav_odds and over_25 and draw_price:
-        risky_legs = [f"{fav_team} To Win", "Over 2.5 Goals"]
-        risky_odds = round(fav_odds * over_25["price"], 2)
-    elif home_price and away_price:
-        outsider = home_price if home_price["price"] > away_price["price"] else away_price
-        risky_legs = [f"{outsider['name']} To Win"]
-        risky_odds = outsider["price"]
-        risky_bookmaker = outsider["bookmaker"]
-
-    sections.append(build_bet_section(
-        "🔴 <b>RISKY ⚠️</b>",
-        3,
-        risky_odds,
-        risky_legs,
-        "High return play.",
-        bookmaker=risky_bookmaker,
-        include=risky_odds is not None,
-    ))
+    sections.append(build_combo_section("🟢 <b>SAFE</b>", setup.get("safe"), 10))
+    sections.append(build_combo_section("🔵 <b>COVER</b>", setup.get("cover"), 4))
+    sections.append(build_combo_section("🟡 <b>VALUE ⭐</b>", setup.get("value"), 10))
+    sections.append(build_combo_section("🔴 <b>RISKY ⚠️</b>", setup.get("risky"), 3))
 
     return [section for section in sections if section.strip()]
 
 
 def build_football_setup_message(scored):
     event = scored["event"]
+    setup = select_best_setup(scored)
+    assessed_score = fixture_assessment_score(scored, setup)
 
     home = event.get("home_team", "Home")
     away = event.get("away_team", "Away")
@@ -748,17 +1096,27 @@ def build_football_setup_message(scored):
     if not sections:
         return None
 
+    value = setup.get("value")
+    risky = setup.get("risky")
+
+    # Do not post weak-looking setups even if fixture score is OK.
+    if not value and not risky:
+        return None
+
     bot_pick = "🟢 SAFE"
-    if any("VALUE" in section for section in sections):
+    if value:
         bot_pick = "🟡 VALUE"
+    elif risky:
+        bot_pick = "🔴 RISKY"
 
     return (
         "📖 <b>THE BLACK BOOK</b>\n\n"
         f"<b>{home} vs {away}</b>\n"
         f"🏆 {compact_league_name(sport_key)}\n"
         f"⏰ {kickoff}\n\n"
-        f"🔥 Score: <b>{scored['score']}/100</b>\n"
-        f"📊 Rating: <b>{scored['confidence']}</b>\n\n"
+        f"🔥 Fixture: <b>{assessed_score}/100</b>\n"
+        f"🧠 Best Combo: <b>{setup['best_combo_score']}/100</b>\n"
+        f"📊 Rating: <b>{quality_label(assessed_score)}</b>\n\n"
         "━━━━━━━━━━\n\n"
         + "\n\n━━━━━━━━━━\n\n".join(sections)
         + "\n\n━━━━━━━━━━\n\n"
@@ -781,7 +1139,10 @@ def scan_football():
         if not scored:
             continue
 
-        if scored["score"] < get_score_threshold():
+        setup = select_best_setup(scored)
+        assessed_score = fixture_assessment_score(scored, setup)
+
+        if assessed_score < get_score_threshold():
             continue
 
         message = build_football_setup_message(scored)
@@ -790,9 +1151,11 @@ def scan_football():
             continue
 
         scored["message"] = message
+        scored["assessment_score"] = assessed_score
+        scored["setup"] = setup
         scored_events.append(scored)
 
-    scored_events.sort(key=lambda item: item["score"], reverse=True)
+    scored_events.sort(key=lambda item: item.get("assessment_score", item["score"]), reverse=True)
 
     return scored_events[:MAX_FOOTBALL_POSTS], errors, len(events)
 
@@ -847,7 +1210,7 @@ def scan_all_football_scores(limit=10):
         if scored:
             scored_events.append(scored)
 
-    scored_events.sort(key=lambda item: item["score"], reverse=True)
+    scored_events.sort(key=lambda item: item.get("assessment_score", item["score"]), reverse=True)
     return scored_events[:limit], errors, len(events)
 
 
@@ -871,11 +1234,14 @@ def build_showallfootball_message(limit=10):
             home = event.get("home_team", "Home")
             away = event.get("away_team", "Away")
             fav = scored["favourite"]
-            status = setup_status(scored["score"])
+            setup = select_best_setup(scored)
+            assessed_score = fixture_assessment_score(scored, setup)
+            status = setup_status(assessed_score)
+            value = setup.get("value")
             lines.append(
                 f"<b>{i}. {home} vs {away}</b>\n"
-                f"{status} — <b>{scored['score']}/100</b> — {quality_label(scored['score'])}\n"
-                f"Safe: {fav['team']} @ {format_odds(fav['odds'])}\n"
+                f"{status} — <b>{assessed_score}/100</b> — {quality_label(assessed_score)}\n"
+                f"Best: {compact_legs(value['leg_names']) + ' @ ' + format_odds(value['odds']) if value else fav['team'] + ' @ ' + format_odds(fav['odds'])}\n"
             )
 
     if errors:
@@ -1211,6 +1577,17 @@ def scan_football_route():
     }), 200
 
 
+@app.route("/preview-football", methods=["GET", "POST"])
+def preview_football_route():
+    message = build_previewfootball_message(limit=8)
+
+    return jsonify({
+        "ok": True,
+        "version": VERSION,
+        "preview": message,
+    }), 200
+
+
 @app.route("/markets-football", methods=["GET", "POST"])
 def markets_football_route():
     supported, unsupported, sample_details = inspect_available_markets_for_football()
@@ -1261,6 +1638,14 @@ def telegram_webhook():
 
         elif lower_text.startswith("/chatid"):
             reply = build_chatid_message(chat_id, thread_id)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/previewfootball") or lower_text.startswith("/preview"):
+            reply = build_previewfootball_message(limit=5)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/settings"):
+            reply = build_settings_message()
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/score"):
