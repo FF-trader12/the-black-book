@@ -18,7 +18,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.2.1-football-scanner"
+VERSION = "the-black-book-v0.2.2-football-scoring-tools"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -29,7 +29,8 @@ RACING_TOPIC_ID = int(os.environ.get("RACING_TOPIC_ID", "11") or 11)
 RUGBY_TOPIC_ID = int(os.environ.get("RUGBY_TOPIC_ID", "15") or 15)
 
 # Scanner settings
-MIN_FOOTBALL_SCORE = int(os.environ.get("MIN_FOOTBALL_SCORE", "78") or 78)
+MIN_FOOTBALL_SCORE = int(os.environ.get("MIN_FOOTBALL_SCORE", "65") or 65)
+RUNTIME_MIN_FOOTBALL_SCORE = MIN_FOOTBALL_SCORE
 MAX_FOOTBALL_POSTS = int(os.environ.get("MAX_FOOTBALL_POSTS", "3") or 3)
 
 # Keep this controlled so the free Odds API credits do not get burned.
@@ -139,6 +140,41 @@ def implied_probability(decimal_odds):
         return 1 / decimal_odds
     except Exception:
         return 0
+
+def quality_label(score):
+    try:
+        score = int(score)
+    except Exception:
+        score = 0
+
+    if score >= 90:
+        return "🔥 ELITE"
+    if score >= 80:
+        return "✅ STRONG"
+    if score >= 70:
+        return "👀 GOOD"
+    if score >= 60:
+        return "🟠 WATCHLIST"
+    return "⚪ LOW EDGE"
+
+
+def get_current_threshold():
+    return int(globals().get("RUNTIME_MIN_FOOTBALL_SCORE", MIN_FOOTBALL_SCORE))
+
+
+def set_current_threshold(value):
+    global RUNTIME_MIN_FOOTBALL_SCORE
+
+    try:
+        value = int(value)
+    except Exception:
+        return False, "Score must be a number."
+
+    if value < 1 or value > 100:
+        return False, "Score must be between 1 and 100."
+
+    RUNTIME_MIN_FOOTBALL_SCORE = value
+    return True, f"Football scoring threshold set to {value}."
 
 
 def safe_float(value, default=None):
@@ -465,12 +501,14 @@ def score_football_event(event):
 
     if score >= 90:
         confidence = "ELITE"
-    elif score >= 82:
-        confidence = "HIGH"
-    elif score >= 78:
+    elif score >= 80:
+        confidence = "STRONG"
+    elif score >= 70:
         confidence = "GOOD"
+    elif score >= 60:
+        confidence = "WATCHLIST"
     else:
-        confidence = "NO EDGE"
+        confidence = "LOW EDGE"
 
     return {
         "event": event,
@@ -512,6 +550,9 @@ def generate_football_builds(scored):
     fav_team = fav["team"]
     fav_odds = fav["odds"]
 
+    home_price = prices.get("home")
+    away_price = prices.get("away")
+    draw_price = prices.get("draw")
     over_25 = prices.get("over_25")
     under_25 = prices.get("under_25")
     btts_yes = prices.get("btts_yes")
@@ -519,96 +560,86 @@ def generate_football_builds(scored):
 
     sections = []
 
-    # SAFE
-    safe_legs = []
-    safe_odds = None
-    safe_bookmaker = None
-
-    if fav_odds <= 1.95:
-        safe_legs = [f"{fav_team} To Win"]
-        safe_odds = fav_odds
-        safe_bookmaker = fav["bookmaker"]
-    elif over_25 and over_25["price"] <= 1.95:
-        safe_legs = ["Over 2.5 Goals"]
-        safe_odds = over_25["price"]
-        safe_bookmaker = over_25["bookmaker"]
-    elif btts_yes and btts_yes["price"] <= 1.95:
-        safe_legs = ["BTTS Yes"]
-        safe_odds = btts_yes["price"]
-        safe_bookmaker = btts_yes["bookmaker"]
+    # SAFE - always create from strongest favourite if available.
+    safe_legs = [f"{fav_team} To Win"]
+    safe_odds = fav_odds
+    safe_bookmaker = fav["bookmaker"]
 
     sections.append(build_bet_section(
         "🟢 <b>SAFE</b>",
         10,
         safe_odds,
         safe_legs,
-        "Highest probability angle from the available market.",
+        "Lowest-risk angle available from current odds.",
         bookmaker=safe_bookmaker,
-        include=safe_odds is not None,
+        include=True,
     ))
 
-    # VALUE
+    # VALUE - prefer goals/BTTS if available, otherwise use best reasonable win price.
     value_legs = []
     value_odds = None
     value_bookmaker = None
 
-    if over_25 and 1.75 <= over_25["price"] <= 2.40:
+    if over_25 and 1.70 <= over_25["price"] <= 2.80:
         value_legs = ["Over 2.5 Goals"]
         value_odds = over_25["price"]
         value_bookmaker = over_25["bookmaker"]
-    elif btts_yes and 1.75 <= btts_yes["price"] <= 2.50:
+    elif btts_yes and 1.70 <= btts_yes["price"] <= 2.80:
         value_legs = ["BTTS Yes"]
         value_odds = btts_yes["price"]
         value_bookmaker = btts_yes["bookmaker"]
-    elif 1.85 <= fav_odds <= 2.60:
+    elif 1.65 <= fav_odds <= 3.20:
         value_legs = [f"{fav_team} To Win"]
         value_odds = fav_odds
         value_bookmaker = fav["bookmaker"]
+    elif draw_price:
+        value_legs = ["Draw"]
+        value_odds = draw_price["price"]
+        value_bookmaker = draw_price["bookmaker"]
 
     sections.append(build_bet_section(
         "🟡 <b>VALUE ⭐</b>",
         10,
         value_odds,
         value_legs,
-        "Best risk/reward angle from the available market.",
+        "Best risk/reward angle available from current odds.",
         bookmaker=value_bookmaker,
         include=value_odds is not None,
     ))
 
-    # COVER
+    # COVER - alternative outcome protection.
     cover_legs = []
     cover_odds = None
     cover_bookmaker = None
 
-    if btts_no and fav_odds <= 1.90:
-        cover_legs = ["BTTS No"]
-        cover_odds = btts_no["price"]
-        cover_bookmaker = btts_no["bookmaker"]
-    elif under_25 and under_25["price"] <= 2.40:
+    if draw_price and 2.50 <= draw_price["price"] <= 5.50:
+        cover_legs = ["Draw"]
+        cover_odds = draw_price["price"]
+        cover_bookmaker = draw_price["bookmaker"]
+    elif under_25 and under_25["price"] <= 3.00:
         cover_legs = ["Under 2.5 Goals"]
         cover_odds = under_25["price"]
         cover_bookmaker = under_25["bookmaker"]
-    elif prices.get("draw") and 2.80 <= prices["draw"]["price"] <= 4.20:
-        cover_legs = ["Draw"]
-        cover_odds = prices["draw"]["price"]
-        cover_bookmaker = prices["draw"]["bookmaker"]
+    elif btts_no:
+        cover_legs = ["BTTS No"]
+        cover_odds = btts_no["price"]
+        cover_bookmaker = btts_no["bookmaker"]
 
     sections.append(build_bet_section(
         "🔵 <b>COVER</b>",
         4,
         cover_odds,
         cover_legs,
-        "Alternative route if the main value angle does not play out.",
+        "Alternative route if the main angle fails.",
         bookmaker=cover_bookmaker,
         include=cover_odds is not None,
     ))
 
-    # RISKY
+    # RISKY - high upside. If goals/BTTS are unavailable, create a clear h2h-based outsider angle.
     risky_legs = []
     risky_odds = None
+    risky_bookmaker = None
 
-    # The Odds API gives single-market odds, not same-game bet builder odds.
-    # This is an estimated combo using available market odds and is marked clearly.
     if fav_odds and over_25 and btts_yes:
         risky_legs = [
             f"{fav_team} To Win",
@@ -616,17 +647,26 @@ def generate_football_builds(scored):
             "BTTS Yes",
         ]
         risky_odds = round(fav_odds * over_25["price"] * btts_yes["price"], 2)
+        risky_bookmaker = "Estimated"
+    elif draw_price:
+        risky_legs = ["Draw"]
+        risky_odds = draw_price["price"]
+        risky_bookmaker = draw_price["bookmaker"]
+    elif home_price and away_price:
+        outsider = home_price if home_price["price"] > away_price["price"] else away_price
+        risky_legs = [f"{outsider['name']} To Win"]
+        risky_odds = outsider["price"]
+        risky_bookmaker = outsider["bookmaker"]
 
-    if risky_odds and 5.0 <= risky_odds <= 15.0:
-        sections.append(build_bet_section(
-            "🔴 <b>RISKY ⚠️</b>",
-            3,
-            risky_odds,
-            risky_legs,
-            "High-risk estimated combo. Small stake only.",
-            bookmaker="Estimated",
-            include=True,
-        ))
+    sections.append(build_bet_section(
+        "🔴 <b>RISKY ⚠️</b>",
+        3,
+        risky_odds,
+        risky_legs,
+        "Higher-risk angle. Small stake only.",
+        bookmaker=risky_bookmaker,
+        include=risky_odds is not None,
+    ))
 
     return [section for section in sections if section.strip()]
 
@@ -682,6 +722,95 @@ def build_football_setup_message(scored):
     )
 
 
+
+def scan_all_football_scores(limit=10):
+    events, errors = fetch_football_odds()
+    scored_events = []
+
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+
+        message = build_football_setup_message(scored)
+        if message:
+            scored["message"] = message
+
+        scored_events.append(scored)
+
+    scored_events.sort(key=lambda item: item["score"], reverse=True)
+    return scored_events[:limit], errors, len(events)
+
+
+def build_showallfootball_message(limit=10):
+    scored_events, errors, scanned_count = scan_all_football_scores(limit=limit)
+
+    lines = [
+        "⚽ <b>THE BLACK BOOK FOOTBALL SCORES</b>",
+        "",
+        f"Fixtures scanned: <b>{scanned_count}</b>",
+        f"Showing top: <b>{len(scored_events)}</b>",
+        f"Current post threshold: <b>{get_current_threshold()}</b>",
+        "",
+    ]
+
+    if not scored_events:
+        lines.append("No scorable football fixtures found.")
+    else:
+        for i, scored in enumerate(scored_events, start=1):
+            event = scored["event"]
+            home = event.get("home_team", "Home")
+            away = event.get("away_team", "Away")
+            fav = scored["favourite"]
+            label = quality_label(scored["score"])
+            kickoff = kickoff_text(event.get("commence_time"))
+
+            lines.append(
+                f"<b>{i}. {home} vs {away}</b>\n"
+                f"{label} — <b>{scored['score']}/100</b>\n"
+                f"Kickoff: {kickoff}\n"
+                f"Fav: {fav['team']} @ {format_odds(fav['odds'])}\n"
+            )
+
+    if errors:
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
+
+    return "\n".join(lines)
+
+
+def build_setscoring_message(args_text=""):
+    args_text = str(args_text or "").strip()
+
+    if not args_text:
+        return (
+            "⚙️ <b>FOOTBALL SCORING</b>\n\n"
+            f"Current threshold: <b>{get_current_threshold()}</b>\n\n"
+            "Use:\n"
+            "<code>/setscoring 60</code>\n"
+            "<code>/setscoring 70</code>\n"
+            "<code>/setscoring 78</code>\n\n"
+            "Lower score = more setups posted.\n"
+            "Higher score = stricter filtering."
+        )
+
+    value = args_text.split()[0]
+    ok, msg = set_current_threshold(value)
+
+    if ok:
+        return (
+            "✅ <b>SCORING UPDATED</b>\n\n"
+            f"{msg}\n\n"
+            "Run <code>/scanfootball</code> again to test."
+        )
+
+    return (
+        "⚠️ <b>SCORING NOT UPDATED</b>\n\n"
+        f"{msg}"
+    )
+
+
 # =========================
 # Scanner runner
 # =========================
@@ -696,7 +825,7 @@ def scan_football():
         if not scored:
             continue
 
-        if scored["score"] < MIN_FOOTBALL_SCORE:
+        if scored["score"] < get_current_threshold():
             continue
 
         message = build_football_setup_message(scored)
@@ -732,7 +861,8 @@ def run_football_scan(post_to_topic=True):
         f"⚽ Fixtures scanned: <b>{scanned_count}</b>\n"
         f"🔥 Setups found: <b>{len(setups)}</b>\n"
         f"📤 Posts sent: <b>{posts_sent}</b>\n"
-        f"🎯 Market mode: <b>{ODDS_MARKETS}</b>\n\n"
+        f"🎯 Market mode: <b>{ODDS_MARKETS}</b>\n"
+        f"⚙️ Threshold: <b>{get_current_threshold()}</b>\n\n"
     )
 
     if not setups:
@@ -769,6 +899,8 @@ def build_start_message():
         "Commands:\n"
         "• /scan - Run all active scanners\n"
         "• /scanfootball - Scan football only\n"
+        "• /showallfootball - Show top scored football fixtures\n"
+        "• /setscoring - View/change scoring threshold\n"
         "• /sports - Show available soccer sport keys\n"
         "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
         "• /risky - Demo risky setup only\n"
@@ -785,6 +917,8 @@ def build_help_message():
         "• /start - Bot intro\n"
         "• /scan - Run all active scanners\n"
         "• /scanfootball - Scan football only\n"
+        "• /showallfootball - Show top scored football fixtures\n"
+        "• /setscoring 65 - Change scoring threshold\n"
         "• /sports - Show available soccer sport keys from Odds API\n"
         "• /top - Demo SAFE / VALUE / COVER / RISKY setup\n"
         "• /risky - Demo risky setup only\n"
@@ -963,7 +1097,7 @@ def health():
         "odds_api_loaded": bool(ODDS_API_KEY),
         "football_chat_id": FOOTBALL_CHAT_ID,
         "football_topic_id": FOOTBALL_TOPIC_ID,
-        "min_football_score": MIN_FOOTBALL_SCORE,
+        "min_football_score": get_current_threshold(),
         "football_sport_keys": FOOTBALL_SPORT_KEYS,
     }), 200
 
@@ -1031,6 +1165,30 @@ def scan_football_route():
     }), 200
 
 
+@app.route("/show-all-football", methods=["GET", "POST"])
+def show_all_football_route():
+    scored_events, errors, scanned_count = scan_all_football_scores(limit=10)
+
+    return jsonify({
+        "ok": True,
+        "version": VERSION,
+        "scanned_count": scanned_count,
+        "returned": len(scored_events),
+        "threshold": get_current_threshold(),
+        "top_scores": [
+            {
+                "match": f"{item['event'].get('home_team')} vs {item['event'].get('away_team')}",
+                "score": item["score"],
+                "confidence": item["confidence"],
+                "favourite": item["favourite"]["team"],
+                "favourite_odds": item["favourite"]["odds"],
+            }
+            for item in scored_events
+        ],
+        "errors": errors[:5],
+    }), 200
+
+
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     try:
@@ -1068,6 +1226,15 @@ def telegram_webhook():
 
         elif lower_text.startswith("/chatid"):
             reply = build_chatid_message(chat_id, thread_id)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/showallfootball") or lower_text.startswith("/showfootball"):
+            reply = build_showallfootball_message(limit=10)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/setscoring"):
+            args_text = text[len("/setscoring"):].strip()
+            reply = build_setscoring_message(args_text)
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/sports"):
