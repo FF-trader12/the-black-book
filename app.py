@@ -6,8 +6,8 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.2.4
-# Football Setup Logic + Cleaner Diagnostics
+# THE BLACK BOOK v0.2.5
+# Market Inspector + Score Control + Setup Trial Engine
 # =========================
 
 BOT_TOKEN = (
@@ -18,7 +18,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.2.4"
+VERSION = "the-black-book-v0.2.5"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -31,6 +31,7 @@ RUGBY_TOPIC_ID = int(os.environ.get("RUGBY_TOPIC_ID", "15") or 15)
 # Scanner settings
 MIN_FOOTBALL_SCORE = int(os.environ.get("MIN_FOOTBALL_SCORE", "65") or 65)
 MAX_FOOTBALL_POSTS = int(os.environ.get("MAX_FOOTBALL_POSTS", "3") or 3)
+CURRENT_MIN_FOOTBALL_SCORE = MIN_FOOTBALL_SCORE
 
 # Keep this controlled so the free Odds API credits do not get burned.
 FOOTBALL_SPORT_KEYS = [
@@ -44,6 +45,10 @@ FOOTBALL_SPORT_KEYS = [
 
 ODDS_REGION = os.environ.get("ODDS_REGION", "uk")
 ODDS_MARKETS = os.environ.get("ODDS_MARKETS", "h2h")
+EXTRA_MARKETS_TO_TEST = os.environ.get(
+    "EXTRA_MARKETS_TO_TEST",
+    "h2h,totals,btts,spreads,alternate_spreads,alternate_totals,team_totals,draw_no_bet,double_chance,player_goalscorer,player_shots,corners,cards"
+)
 
 
 # =========================
@@ -233,9 +238,55 @@ def compact_legs(legs):
 
 
 def setup_status(score):
-    if score >= MIN_FOOTBALL_SCORE:
+    if score >= get_score_threshold():
         return "✅ POST"
     return "❌ BELOW THRESHOLD"
+
+
+
+def get_score_threshold():
+    return int(globals().get("CURRENT_MIN_FOOTBALL_SCORE", MIN_FOOTBALL_SCORE))
+
+
+def set_score_threshold(value):
+    global CURRENT_MIN_FOOTBALL_SCORE
+
+    try:
+        value = int(str(value).strip())
+    except Exception:
+        return False, "Score must be a number."
+
+    if value < 1 or value > 100:
+        return False, "Score must be between 1 and 100."
+
+    CURRENT_MIN_FOOTBALL_SCORE = value
+    return True, f"Minimum football score set to {value}."
+
+
+def build_score_message(args_text=""):
+    args_text = str(args_text or "").strip()
+
+    if not args_text:
+        return (
+            "⚙️ <b>THE BLACK BOOK SCORE</b>\n\n"
+            f"Current minimum score: <b>{get_score_threshold()}</b>\n\n"
+            "Use:\n"
+            "<code>/score 60</code>\n"
+            "<code>/score 65</code>\n"
+            "<code>/score 70</code>"
+        )
+
+    value = args_text.split()[0]
+    ok, msg = set_score_threshold(value)
+
+    if ok:
+        return (
+            "✅ <b>SCORE UPDATED</b>\n\n"
+            f"{msg}\n\n"
+            "Run <code>/showallfootball</code> or <code>/scanfootball</code>."
+        )
+
+    return f"⚠️ <b>SCORE NOT UPDATED</b>\n\n{msg}"
 
 
 # =========================
@@ -730,7 +781,7 @@ def scan_football():
         if not scored:
             continue
 
-        if scored["score"] < MIN_FOOTBALL_SCORE:
+        if scored["score"] < get_score_threshold():
             continue
 
         message = build_football_setup_message(scored)
@@ -765,7 +816,8 @@ def run_football_scan(post_to_topic=True):
         "📖 <b>THE BLACK BOOK SCAN</b>\n\n"
         f"⚽ Fixtures: <b>{scanned_count}</b>\n"
         f"🔥 Setups: <b>{len(setups)}</b>\n"
-        f"📤 Posted: <b>{posts_sent}</b>\n\n"
+        f"📤 Posted: <b>{posts_sent}</b>\n"
+        f"⚙️ Score: <b>{get_score_threshold()}</b>\n\n"
     )
 
     if not setups:
@@ -807,7 +859,7 @@ def build_showallfootball_message(limit=10):
         "",
         f"Today fixtures scanned: <b>{scanned_count}</b>",
         f"Showing top: <b>{len(scored_events)}</b>",
-        f"Post threshold: <b>{MIN_FOOTBALL_SCORE}</b>",
+        f"Post threshold: <b>{get_score_threshold()}</b>",
         "",
     ]
 
@@ -982,6 +1034,91 @@ def build_sports_message():
     return "\n".join(lines)
 
 
+def inspect_available_markets_for_football():
+    """
+    Tests likely football market names one by one.
+    This tells us what The Odds API actually returns for your key/plan/leagues.
+    """
+    supported = []
+    unsupported = []
+    sample_details = []
+
+    market_names = [x.strip() for x in EXTRA_MARKETS_TO_TEST.split(",") if x.strip()]
+    sport_keys = FOOTBALL_SPORT_KEYS[:3]
+
+    for sport_key in sport_keys:
+        for market_name in market_names:
+            try:
+                data = odds_api_get(
+                    f"/sports/{sport_key}/odds",
+                    params={
+                        "regions": ODDS_REGION,
+                        "markets": market_name,
+                        "oddsFormat": "decimal",
+                        "dateFormat": "iso",
+                    },
+                )
+
+                if not data:
+                    unsupported.append(f"{sport_key}/{market_name}: no data")
+                    continue
+
+                found = False
+                for event in data[:3]:
+                    for bookmaker in event.get("bookmakers", []):
+                        for market in bookmaker.get("markets", []):
+                            if market.get("key") == market_name:
+                                found = True
+                                if len(sample_details) < 8:
+                                    sample_details.append(
+                                        f"{market_name}: {event.get('home_team')} vs {event.get('away_team')}"
+                                    )
+
+                if found:
+                    supported.append(f"{sport_key}/{market_name}")
+                else:
+                    unsupported.append(f"{sport_key}/{market_name}: no market returned")
+
+            except Exception as e:
+                unsupported.append(f"{sport_key}/{market_name}: {clean_api_error(e)}")
+
+    return supported, unsupported, sample_details
+
+
+def build_marketsfootball_message():
+    supported, unsupported, sample_details = inspect_available_markets_for_football()
+
+    lines = [
+        "🧪 <b>FOOTBALL MARKET TEST</b>",
+        "",
+        "<b>Returning data:</b>",
+    ]
+
+    if supported:
+        for item in supported[:20]:
+            lines.append(f"✅ <code>{item}</code>")
+    else:
+        lines.append("No extra markets confirmed yet.")
+
+    lines.append("")
+    lines.append("<b>Samples:</b>")
+    if sample_details:
+        for item in sample_details[:8]:
+            lines.append(f"• {item}")
+    else:
+        lines.append("No samples returned.")
+
+    lines.append("")
+    lines.append("<b>Unavailable / failed:</b>")
+    for item in unsupported[:12]:
+        lines.append(f"❌ {item}")
+
+    lines.append("")
+    lines.append("This proves whether corners/player props are available on your current Odds API plan.")
+
+    return "\n".join(lines)
+
+
 # =========================
 # Flask routes
 # =========================
@@ -1006,7 +1143,7 @@ def health():
         "odds_api_loaded": bool(ODDS_API_KEY),
         "football_chat_id": FOOTBALL_CHAT_ID,
         "football_topic_id": FOOTBALL_TOPIC_ID,
-        "min_football_score": MIN_FOOTBALL_SCORE,
+        "min_football_score": get_score_threshold(),
         "football_sport_keys": FOOTBALL_SPORT_KEYS,
     }), 200
 
@@ -1074,6 +1211,19 @@ def scan_football_route():
     }), 200
 
 
+@app.route("/markets-football", methods=["GET", "POST"])
+def markets_football_route():
+    supported, unsupported, sample_details = inspect_available_markets_for_football()
+
+    return jsonify({
+        "ok": True,
+        "version": VERSION,
+        "supported": supported,
+        "unsupported": unsupported[:25],
+        "samples": sample_details,
+    }), 200
+
+
 @app.route("/telegram-webhook", methods=["POST"])
 def telegram_webhook():
     try:
@@ -1111,6 +1261,15 @@ def telegram_webhook():
 
         elif lower_text.startswith("/chatid"):
             reply = build_chatid_message(chat_id, thread_id)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/score"):
+            args_text = text[len("/score"):].strip()
+            reply = build_score_message(args_text)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/marketsfootball") or lower_text.startswith("/footballmarkets"):
+            reply = build_marketsfootball_message()
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/showallfootball") or lower_text.startswith("/showfootball"):
