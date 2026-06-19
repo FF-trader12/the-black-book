@@ -6,8 +6,8 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.2
-# Football scanner using The Odds API
+# THE BLACK BOOK v0.2.3
+# Today Fixture Accumulator Builder
 # =========================
 
 BOT_TOKEN = (
@@ -18,7 +18,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.2.3-today-accumulator-builder"
+VERSION = "the-black-book-v0.2.3"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -126,7 +126,7 @@ def decimal_to_fractional(decimal_odds):
 def format_odds(decimal_odds):
     try:
         decimal_odds = float(decimal_odds)
-        return f"{decimal_to_fractional(decimal_odds)} ({decimal_odds:.2f})"
+        return decimal_to_fractional(decimal_odds)
     except Exception:
         return "N/A"
 
@@ -537,17 +537,22 @@ def build_bet_section(label, stake, odds, legs, purpose, bookmaker=None, include
 
     lines = [
         f"{label}",
-        f"{money(stake)} stake | {format_odds(odds)} | Return {money(float(stake) * float(odds))}",
+        "",
     ]
 
-    if bookmaker:
-        lines.append(str(bookmaker))
+    for index, leg in enumerate(legs):
+        if index > 0:
+            lines.append("+")
+        lines.append(leg)
 
-    for leg in legs:
-        lines.append(f"• {leg}")
+    lines.extend([
+        "",
+        f"Odds: <b>{format_odds(odds)}</b>",
+        f"Stake: <b>{money(stake)}</b>",
+        f"Return: <b>{money(float(stake) * float(odds))}</b>",
+    ])
 
-    lines.append(f"<i>{purpose}</i>")
-    return "\\n".join(lines) + "\\n"
+    return "\n".join(lines)
 
 
 def generate_football_builds(scored):
@@ -689,24 +694,22 @@ def build_football_setup_message(scored):
     if not sections:
         return None
 
-    reasons = scored["reasons"][:2]
-    reason_line = " | ".join(reasons) if reasons else "Market data supports setup"
-
     bot_pick = "🟢 SAFE"
     if any("VALUE" in section for section in sections):
         bot_pick = "🟡 VALUE"
 
     return (
-        "⚽ <b>THE BLACK BOOK</b>\n\n"
+        "📖 <b>THE BLACK BOOK</b>\n\n"
         f"<b>{home} vs {away}</b>\n"
-        f"{compact_league_name(sport_key)} | {kickoff}\n\n"
-        f"Score: <b>{scored['score']}/100</b> | <b>{scored['confidence']}</b>\n"
-        f"Fav: <b>{fav['team']}</b> @ {format_odds(fav['odds'])}\n\n"
-        + "\n".join(sections)
-        + "\n"
-        f"🎯 <b>Bot Pick:</b> {bot_pick}\n"
-        f"📌 <i>{reason_line}</i>\n"
-        "<i>Estimated Acca odds are calculated from available single-market odds.</i>"
+        f"🏆 {compact_league_name(sport_key)}\n"
+        f"⏰ {kickoff}\n\n"
+        f"🔥 Score: <b>{scored['score']}/100</b>\n"
+        f"📊 Rating: <b>{scored['confidence']}</b>\n\n"
+        "━━━━━━━━━━\n\n"
+        + "\n\n━━━━━━━━━━\n\n".join(sections)
+        + "\n\n━━━━━━━━━━\n\n"
+        "🎯 <b>BOT PICK</b>\n"
+        f"{bot_pick}"
     )
 
 
@@ -756,14 +759,14 @@ def run_football_scan(post_to_topic=True):
                 send_errors.append(response.text)
 
     summary = (
-        "📖 <b>THE BLACK BOOK SCAN COMPLETE</b>\n\n"
-        f"⚽ Today fixtures scanned: <b>{scanned_count}</b>\n"
-        f"⚽ Qualifying setups found: <b>{len(setups)}</b>\n"
-        f"⚽ Posts sent: <b>{posts_sent}</b>\n\n"
+        "📖 <b>THE BLACK BOOK SCAN</b>\n\n"
+        f"⚽ Fixtures: <b>{scanned_count}</b>\n"
+        f"🔥 Setups: <b>{len(setups)}</b>\n"
+        f"📤 Posted: <b>{posts_sent}</b>\n\n"
     )
 
     if not setups:
-        summary += "No qualifying football setups found for today.\n"
+        summary += "No qualifying setups found today.\n"
 
     if errors:
         summary += "\n<b>API notes:</b>\n" + "\n".join([f"• {e}" for e in errors[:5]]) + "\n"
