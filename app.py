@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.3.4
-# League Filters
+# THE BLACK BOOK v0.3.5
+# Independent Acca Engine
 # =========================
 
 BOT_TOKEN = (
@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.4"
+VERSION = "the-black-book-v0.3.5-fixed"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -39,6 +39,12 @@ MIN_RISKY_COMBO_SCORE = int(os.environ.get("MIN_RISKY_COMBO_SCORE", "55") or 55)
 MAX_COMBO_LEGS = int(os.environ.get("MAX_COMBO_LEGS", "3") or 3)
 DAILY_ACCA_MIN_SCORE = int(os.environ.get("DAILY_ACCA_MIN_SCORE", "70") or 70)
 DAILY_ACCA_MAX_LEGS = int(os.environ.get("DAILY_ACCA_MAX_LEGS", "4") or 4)
+SAFE_ACCA_MIN_ODDS = float(os.environ.get("SAFE_ACCA_MIN_ODDS", "3.0") or 3.0)
+SAFE_ACCA_MAX_ODDS = float(os.environ.get("SAFE_ACCA_MAX_ODDS", "7.0") or 7.0)
+VALUE_ACCA_MIN_ODDS = float(os.environ.get("VALUE_ACCA_MIN_ODDS", "7.0") or 7.0)
+VALUE_ACCA_MAX_ODDS = float(os.environ.get("VALUE_ACCA_MAX_ODDS", "13.0") or 13.0)
+RISKY_ACCA_MIN_ODDS = float(os.environ.get("RISKY_ACCA_MIN_ODDS", "16.0") or 16.0)
+RISKY_ACCA_MAX_ODDS = float(os.environ.get("RISKY_ACCA_MAX_ODDS", "26.0") or 26.0)
 
 # Keep this controlled so the free Odds API credits do not get burned.
 FOOTBALL_SPORT_KEYS = [
@@ -230,6 +236,28 @@ def parse_scan_date(args_text=""):
 
 
 def parse_scan_args(args_text=""):
+    global FOOTBALL_LEAGUE_ALIASES
+
+    if "FOOTBALL_LEAGUE_ALIASES" not in globals():
+        FOOTBALL_LEAGUE_ALIASES = {
+            "worldcup": ["soccer_fifa_world_cup"],
+            "world": ["soccer_fifa_world_cup"],
+            "wc": ["soccer_fifa_world_cup"],
+            "epl": ["soccer_epl"],
+            "prem": ["soccer_epl"],
+            "premierleague": ["soccer_epl"],
+            "ucl": ["soccer_uefa_champs_league"],
+            "championsleague": ["soccer_uefa_champs_league"],
+            "uel": ["soccer_uefa_europa_league"],
+            "europaleague": ["soccer_uefa_europa_league"],
+            "laliga": ["soccer_spain_la_liga"],
+            "spain": ["soccer_spain_la_liga"],
+            "bundesliga": ["soccer_germany_bundesliga"],
+            "seriea": ["soccer_italy_serie_a"],
+            "ligue1": ["soccer_france_ligue_one"],
+            "all": FOOTBALL_SPORT_KEYS,
+        }
+
     raw = str(args_text or "").strip().lower()
     tokens = raw.split()
 
@@ -1392,6 +1420,63 @@ def build_showallfootball_message(limit=10, target_date=None, sport_keys=None, l
     return "\n".join(lines)
 
 
+def clone_combo_with_names(base_combo, leg_names, odds, score_adjust=0):
+    if not base_combo:
+        return None
+
+    return {
+        "legs": base_combo.get("legs", []),
+        "leg_names": leg_names,
+        "odds": round(float(odds), 2),
+        "score": max(0, min(100, int(base_combo.get("score", 50)) + int(score_adjust))),
+        "type_count": len(leg_names),
+    }
+
+
+def build_acca_combo_variants(row):
+    setup = row.get("setup", {})
+    safe = setup.get("safe")
+    value = setup.get("value")
+    risky = setup.get("risky")
+
+    safe_acca = safe
+    value_acca = None
+
+    if safe and value:
+        safe_name = safe["leg_names"][0] if safe.get("leg_names") else None
+        value_names = value.get("leg_names", [])
+
+        if safe_name and any("Over 2.5" in x for x in value_names):
+            value_acca = clone_combo_with_names(
+                value,
+                [safe_name, "Over 1.5 Goals"],
+                max(float(safe["odds"]) * 1.45, float(safe["odds"]) + 0.35),
+                score_adjust=5,
+            )
+
+        elif safe_name and any("Under 2.5" in x for x in value_names):
+            value_acca = clone_combo_with_names(
+                safe,
+                [safe_name],
+                float(safe["odds"]),
+                score_adjust=3,
+            )
+
+        else:
+            value_acca = value
+
+    if not value_acca:
+        value_acca = value or safe
+
+    risky_acca = risky or value
+
+    return {
+        "safe_acca": safe_acca,
+        "value_acca": value_acca,
+        "risky_acca": risky_acca,
+    }
+
+
 def acca_line(row, combo_type):
     event = row["event"]
     combo = row[combo_type]
@@ -1407,25 +1492,63 @@ def acca_line(row, combo_type):
     )
 
 
-def build_acca_section(title, rows, combo_type, stake):
-    selected = [row for row in rows if row.get(combo_type)]
-    selected = selected[:DAILY_ACCA_MAX_LEGS]
+def total_acca_odds(rows, combo_type):
+    odds = 1.0
+    for row in rows:
+        combo = row.get(combo_type)
+        if not combo:
+            return 0
+        odds *= float(combo["odds"])
+    return round(odds, 2)
+
+
+def choose_acca_rows(rows, combo_type, min_odds, max_odds):
+    from itertools import combinations
+
+    available = [row for row in rows if row.get(combo_type)]
+    available.sort(key=lambda row: (row["assessment_score"], row[combo_type]["score"]), reverse=True)
+
+    best = []
+    best_gap = 999999
+    max_legs = min(DAILY_ACCA_MAX_LEGS, len(available))
+
+    for size in range(2, max_legs + 1):
+        for combo_rows in combinations(available, size):
+            combo_rows = list(combo_rows)
+            odds = total_acca_odds(combo_rows, combo_type)
+            if odds <= 0:
+                continue
+
+            if min_odds <= odds <= max_odds:
+                return combo_rows
+
+            mid = (min_odds + max_odds) / 2
+            gap = abs(odds - mid)
+            if odds <= max_odds * 1.35 and gap < best_gap:
+                best = combo_rows
+                best_gap = gap
+
+    return best
+
+
+def build_acca_section(title, rows, combo_type, stake, min_odds, max_odds):
+    selected = choose_acca_rows(rows, combo_type, min_odds, max_odds)
 
     if len(selected) < 2:
         return (
             f"{title}\n"
-            "Not enough qualifying picks."
+            f"No qualifying acca in target range {format_odds(min_odds)} - {format_odds(max_odds)}."
         )
 
-    total_odds = 1.0
-    lines = [title, ""]
+    total_odds = total_acca_odds(selected, combo_type)
+    lines = [
+        title,
+        f"Target: <b>{format_odds(min_odds)} - {format_odds(max_odds)}</b>",
+        "",
+    ]
 
     for index, row in enumerate(selected, start=1):
-        combo = row[combo_type]
-        total_odds *= float(combo["odds"])
         lines.append(f"<b>{index}.</b> {acca_line(row, combo_type)}\n")
-
-    total_odds = round(total_odds, 2)
 
     lines.extend([
         "━━━━━━━━━━",
@@ -1452,13 +1575,13 @@ def build_daily_acca_message(target_date=None, sport_keys=None, league_key=None)
         if assessed_score < DAILY_ACCA_MIN_SCORE:
             continue
 
-        rows.append({
+        row = {
             "event": event,
             "assessment_score": assessed_score,
-            "safe": setup.get("safe"),
-            "value": setup.get("value"),
-            "risky": setup.get("risky"),
-        })
+            "setup": setup,
+        }
+        row.update(build_acca_combo_variants(row))
+        rows.append(row)
 
     rows.sort(key=lambda row: row["assessment_score"], reverse=True)
 
@@ -1471,6 +1594,8 @@ def build_daily_acca_message(target_date=None, sport_keys=None, league_key=None)
         f"Qualifying fixtures: <b>{len(rows)}</b>",
         f"Min score: <b>{DAILY_ACCA_MIN_SCORE}</b>",
         "",
+        "<i>Accas are built independently from singles to reduce duplicate risk.</i>",
+        "",
     ]
 
     if len(rows) < 2:
@@ -1482,15 +1607,15 @@ def build_daily_acca_message(target_date=None, sport_keys=None, league_key=None)
                 lines.append(f"• {err}")
         return "\n".join(lines)
 
-    lines.append(build_acca_section("🟢 <b>SAFE ACCA</b>", rows, "safe", 2))
+    lines.append(build_acca_section("🟢 <b>SAFE ACCA</b>", rows, "safe_acca", 2, SAFE_ACCA_MIN_ODDS, SAFE_ACCA_MAX_ODDS))
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━")
     lines.append("")
-    lines.append(build_acca_section("🟡 <b>VALUE ACCA ⭐</b>", rows, "value", 1))
+    lines.append(build_acca_section("🟡 <b>VALUE ACCA ⭐</b>", rows, "value_acca", 1, VALUE_ACCA_MIN_ODDS, VALUE_ACCA_MAX_ODDS))
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━")
     lines.append("")
-    lines.append(build_acca_section("🔴 <b>RISKY ACCA ⚠️</b>", rows, "risky", 1))
+    lines.append(build_acca_section("🔴 <b>RISKY ACCA ⚠️</b>", rows, "risky_acca", 1, RISKY_ACCA_MIN_ODDS, RISKY_ACCA_MAX_ODDS))
 
     if errors:
         lines.append("")
