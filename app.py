@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.6.1-premium-svr"
+VERSION = "the-black-book-v0.3.6.2-compact-premium-svr"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -777,24 +777,18 @@ def premium_combo_card(label, combo, stake=None):
     if not combo:
         return ""
 
-    lines = [
-        f"{label}",
-        "",
-        "🎯 <b>Pick</b>",
-        f"{compact_legs(combo['leg_names'])}",
-        "",
-        "📊 <b>Odds</b>",
-        f"{format_odds(combo['odds'])}",
-    ]
+    if stake is None:
+        return (
+            f"{label}\n"
+            f"{compact_legs(combo['leg_names'])}\n"
+            f"{format_odds(combo['odds'])}"
+        )
 
-    if stake is not None:
-        lines.extend([
-            "",
-            "💰 <b>Example</b>",
-            f"{money(stake)} → {money(float(stake) * float(combo['odds']))}",
-        ])
-
-    return "\n".join(lines)
+    return (
+        f"{label}\n"
+        f"{compact_legs(combo['leg_names'])}\n"
+        f"{format_odds(combo['odds'])} | {money(stake)} → {money(float(stake) * float(combo['odds']))}"
+    )
 
 
 def daily_header(title, target_date=None, league_key=None, fixtures=None, qualified=None, min_score=None):
@@ -1230,31 +1224,33 @@ def build_football_setup_message(scored):
     if not value and not risky:
         return None
 
-    sections = []
+    lines = [
+        "📚 <b>THE BLACK BOOK SVR</b>",
+        "",
+        f"<b>{home} vs {away}</b>",
+        f"🏆 {compact_league_name(sport_key)} | 🕒 {kickoff}",
+        "",
+        f"🔥 Fixture: <b>{assessed_score}/100</b> | 🧠 Combo: <b>{setup['best_combo_score']}/100</b>",
+        "",
+        "━━━━━━━━━━━━━━",
+    ]
 
     if safe:
-        sections.append(build_combo_section("🟢 <b>SAFE</b>", safe, 10))
+        lines.append(premium_combo_card("🟢 <b>SAFE</b>", safe, 10))
+        lines.append("")
 
     if value:
-        sections.append(build_combo_section("🟡 <b>VALUE ⭐</b>", value, 10))
+        lines.append(premium_combo_card("🟡 <b>VALUE ⭐</b>", value, 10))
+        lines.append("")
 
     if risky and risky != value:
-        sections.append(build_combo_section("🔴 <b>RISKY ⚠️</b>", risky, 3))
+        lines.append(premium_combo_card("🔴 <b>RISKY ⚠️</b>", risky, 3))
+        lines.append("")
 
-    bot_pick = "🟡 VALUE ⭐" if value else "🔴 RISKY ⚠️"
+    bot_pick = "🟡 VALUE" if value else "🔴 RISKY"
+    lines.append(f"🎯 <b>BOT PICK:</b> {bot_pick}")
 
-    return (
-        "📚 <b>THE BLACK BOOK SVR</b>\n\n"
-        f"<b>{home} vs {away}</b>\n"
-        f"🏆 {compact_league_name(sport_key)}\n"
-        f"🕒 {kickoff}\n\n"
-        f"{compact_score_line(assessed_score, setup['best_combo_score'])}\n\n"
-        "━━━━━━━━━━━━━━\n\n"
-        + "\n\n━━━━━━━━━━━━━━\n\n".join(sections)
-        + "\n\n━━━━━━━━━━━━━━\n"
-        f"🎯 <b>BLACK BOOK PICK:</b> {bot_pick}\n\n"
-        + black_book_footer()
-    )
+    return "\n".join(lines)
 
 
 # =========================
