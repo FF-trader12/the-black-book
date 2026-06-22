@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.6.5-dailyacca-route-fix"
+VERSION = "the-black-book-v0.3.6.7-command-function-fix"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -1639,6 +1639,77 @@ def build_daily_acca_message(target_date=None, sport_keys=None, league_key=None)
     lines.append(black_book_footer())
 
     return "\n".join(lines)
+
+
+
+def build_previewfootball_message(limit=5, target_date=None, sport_keys=None, league_key=None):
+    events, errors = fetch_football_odds(target_date, sport_keys)
+    rows = []
+
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+
+        setup = select_best_setup(scored)
+        assessed_score = fixture_assessment_score(scored, setup)
+        rows.append({
+            "event": event,
+            "setup": setup,
+            "assessed_score": assessed_score,
+        })
+
+    rows.sort(key=lambda r: (r["assessed_score"], r["setup"]["best_combo_score"]), reverse=True)
+
+    lines = [
+        "🧠 <b>THE BLACK BOOK PREVIEW</b>",
+        "",
+        f"Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
+        f"League: <b>{league_display_name(league_key)}</b>",
+        f"Fixtures: <b>{len(events)}</b>",
+        f"Post score: <b>{get_score_threshold()}</b>",
+        "",
+    ]
+
+    if not rows:
+        lines.append("No scorable fixtures found.")
+    else:
+        for index, row in enumerate(rows[:limit], start=1):
+            event = row["event"]
+            setup = row["setup"]
+            home = event.get("home_team", "Home")
+            away = event.get("away_team", "Away")
+            status = "✅ POST" if row["assessed_score"] >= get_score_threshold() else "❌ NO POST"
+            pick = setup.get("value") or setup.get("safe") or setup.get("risky")
+            pick_text = "None"
+            if pick:
+                pick_text = f"{compact_legs(pick['leg_names'])} @ {format_odds(pick['odds'])}"
+
+            lines.append(
+                f"<b>{index}. {home} vs {away}</b>\n"
+                f"{status} | Fixture <b>{row['assessed_score']}/100</b> | Combo <b>{setup['best_combo_score']}/100</b>\n"
+                f"Pick: {pick_text}\n"
+            )
+
+    if errors:
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
+
+    return "\n".join(lines)
+
+
+def build_settings_message():
+    return (
+        "⚙️ <b>THE BLACK BOOK SETTINGS</b>\n\n"
+        f"Post score: <b>{get_score_threshold()}</b>\n"
+        f"Max football posts: <b>{MAX_FOOTBALL_POSTS}</b>\n"
+        f"Daily acca min score: <b>{DAILY_ACCA_MIN_SCORE}</b>\n"
+        f"Daily acca max legs: <b>{DAILY_ACCA_MAX_LEGS}</b>\n\n"
+        f"Football SVR Topic: <b>{FOOTBALL_SVR_TOPIC_ID}</b>\n"
+        f"Football Accas Topic: <b>{FOOTBALL_ACCAS_TOPIC_ID}</b>\n"
+        f"Football Results Topic: <b>{FOOTBALL_RESULTS_TOPIC_ID}</b>\n"
+    )
 
 
 # =========================
