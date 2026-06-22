@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.6.4-routing-actual-fix"
+VERSION = "the-black-book-v0.3.6.5-dailyacca-route-fix"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -117,6 +117,11 @@ def send_to_football_accas_topic(text: str):
         text,
         thread_id=FOOTBALL_ACCAS_TOPIC_ID,
     )
+
+
+def send_football_accas_message(text):
+    # Alias used by command handlers.
+    return send_to_football_accas_topic(text)
 
 
 def send_to_football_results_topic(text: str):
