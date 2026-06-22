@@ -20,14 +20,25 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.6.3-topic-routing-fix"
+VERSION = "the-black-book-v0.3.6.4-routing-actual-fix"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
 FOOTBALL_CHAT_ID = os.environ.get("FOOTBALL_CHAT_ID", MAIN_CHAT_ID).strip()
+
+# Old generic football topic retained only for backwards compatibility.
 FOOTBALL_TOPIC_ID = int(os.environ.get("FOOTBALL_TOPIC_ID", "13") or 13)
 
-RACING_TOPIC_ID = int(os.environ.get("RACING_TOPIC_ID", "11") or 11)
+# New topic layout
+FOOTBALL_SVR_TOPIC_ID = int(os.environ.get("FOOTBALL_SVR_TOPIC_ID", "235") or 235)
+FOOTBALL_ACCAS_TOPIC_ID = int(os.environ.get("FOOTBALL_ACCAS_TOPIC_ID", "238") or 238)
+FOOTBALL_RESULTS_TOPIC_ID = int(os.environ.get("FOOTBALL_RESULTS_TOPIC_ID", "241") or 241)
+
+RACING_SVR_TOPIC_ID = int(os.environ.get("RACING_SVR_TOPIC_ID", "244") or 244)
+RACING_ACCAS_TOPIC_ID = int(os.environ.get("RACING_ACCAS_TOPIC_ID", "247") or 247)
+RACING_RESULTS_TOPIC_ID = int(os.environ.get("RACING_RESULTS_TOPIC_ID", "250") or 250)
+
+RACING_TOPIC_ID = RACING_SVR_TOPIC_ID
 RUGBY_TOPIC_ID = int(os.environ.get("RUGBY_TOPIC_ID", "15") or 15)
 
 # Scanner settings
@@ -91,10 +102,28 @@ def send_telegram_message(chat_id, text: str, thread_id=None):
 
 
 def send_to_football_topic(text: str):
+    # Individual football SVR cards always go to Football SVR topic.
     return send_telegram_message(
         FOOTBALL_CHAT_ID,
         text,
-        thread_id=FOOTBALL_TOPIC_ID,
+        thread_id=FOOTBALL_SVR_TOPIC_ID,
+    )
+
+
+def send_to_football_accas_topic(text: str):
+    # Daily accas always go to Football Accas topic.
+    return send_telegram_message(
+        FOOTBALL_CHAT_ID,
+        text,
+        thread_id=FOOTBALL_ACCAS_TOPIC_ID,
+    )
+
+
+def send_to_football_results_topic(text: str):
+    return send_telegram_message(
+        FOOTBALL_CHAT_ID,
+        text,
+        thread_id=FOOTBALL_RESULTS_TOPIC_ID,
     )
 
 
@@ -1995,39 +2024,39 @@ def telegram_webhook():
 
         if lower_text.startswith("/start"):
             reply = build_start_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/version"):
             reply = f"📖 <b>THE BLACK BOOK</b>\n\nVersion: <b>{VERSION}</b>"
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/help"):
             reply = build_help_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/top"):
             reply = build_top_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/risky"):
             reply = build_risky_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/chatid"):
             reply = build_chatid_message(chat_id, thread_id)
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/previewtomorrow"):
             target_date, _, sport_keys, league_key = parse_scan_args("tomorrow")
             reply = build_previewfootball_message(limit=8, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/previewfootball") or lower_text.startswith("/preview"):
             command = text.split()[0]
             args_text = text[len(command):].strip()
             target_date, _, sport_keys, league_key = parse_scan_args(args_text)
             reply = build_previewfootball_message(limit=8, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow"):
             target_date, _, sport_keys, league_key = parse_scan_args("tomorrow")
@@ -2043,31 +2072,43 @@ def telegram_webhook():
 
         elif lower_text.startswith("/settings"):
             reply = build_settings_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/score"):
             args_text = text[len("/score"):].strip()
             reply = build_score_message(args_text)
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/marketsfootball") or lower_text.startswith("/footballmarkets"):
             reply = build_marketsfootball_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/showallfootball") or lower_text.startswith("/showfootball"):
             command = text.split()[0]
             args_text = text[len(command):].strip()
             target_date, _, sport_keys, league_key = parse_scan_args(args_text)
             reply = build_showallfootball_message(limit=10, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/routes"):
+            reply = (
+                "🧭 <b>THE BLACK BOOK ROUTES</b>\n\n"
+                f"Football SVR: <b>{FOOTBALL_SVR_TOPIC_ID}</b>\n"
+                f"Football Accas: <b>{FOOTBALL_ACCAS_TOPIC_ID}</b>\n"
+                f"Football Results: <b>{FOOTBALL_RESULTS_TOPIC_ID}</b>\n\n"
+                f"Racing SVR: <b>{RACING_SVR_TOPIC_ID}</b>\n"
+                f"Racing Accas: <b>{RACING_ACCAS_TOPIC_ID}</b>\n"
+                f"Racing Results: <b>{RACING_RESULTS_TOPIC_ID}</b>"
+            )
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/leagues"):
             reply = build_leagues_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/sports"):
             reply = build_sports_message()
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/scantomorrow"):
             target_date, _, sport_keys, league_key = parse_scan_args("tomorrow")
