@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.6-premium-svr"
+VERSION = "the-black-book-v0.3.6.1-premium-svr"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -763,33 +763,15 @@ def black_book_footer():
     return "━━━━━━━━━━━━━━\n📚 <b>THE BLACK BOOK</b>\n<i>SVR Selection Engine</i>"
 
 
-def grade_badge(score):
-    try:
-        score = int(score)
-    except Exception:
-        score = 0
-
-    if score >= 95:
-        return "🥇 ELITE"
-    if score >= 88:
-        return "🥈 STRONG"
-    if score >= 80:
-        return "🥉 SOLID"
-    if score >= 70:
-        return "✅ QUALIFIED"
-    return "⚠️ WATCHLIST"
-
 
 def compact_score_line(fixture_score, combo_score=None):
     if combo_score is None:
-        return f"🔥 Fixture: <b>{fixture_score}/100</b> | {grade_badge(fixture_score)}"
+        return f"🔥 Fixture Score: <b>{fixture_score}/100</b>"
 
     return (
-        f"🔥 Fixture: <b>{fixture_score}/100</b>\n"
-        f"🧠 Combo: <b>{combo_score}/100</b>\n"
-        f"🏆 Grade: <b>{grade_badge(fixture_score)}</b>"
+        f"🔥 Fixture Score: <b>{fixture_score}/100</b>\n"
+        f"🧠 Combo Score: <b>{combo_score}/100</b>"
     )
-
 
 def premium_combo_card(label, combo, stake=None):
     if not combo:
