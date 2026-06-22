@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo
 app = Flask(__name__)
 
 # =========================
-# THE BLACK BOOK v0.3.5
-# Independent Acca Engine
+# THE BLACK BOOK v0.3.6
+# Premium SVR Formatting
 # =========================
 
 BOT_TOKEN = (
@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.5-fixed"
+VERSION = "the-black-book-v0.3.6-premium-svr"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -754,6 +754,99 @@ def score_football_event(event):
 
 
 
+
+# =========================
+# Premium formatting helpers
+# =========================
+
+def black_book_footer():
+    return "━━━━━━━━━━━━━━\n📚 <b>THE BLACK BOOK</b>\n<i>SVR Selection Engine</i>"
+
+
+def grade_badge(score):
+    try:
+        score = int(score)
+    except Exception:
+        score = 0
+
+    if score >= 95:
+        return "🥇 ELITE"
+    if score >= 88:
+        return "🥈 STRONG"
+    if score >= 80:
+        return "🥉 SOLID"
+    if score >= 70:
+        return "✅ QUALIFIED"
+    return "⚠️ WATCHLIST"
+
+
+def compact_score_line(fixture_score, combo_score=None):
+    if combo_score is None:
+        return f"🔥 Fixture: <b>{fixture_score}/100</b> | {grade_badge(fixture_score)}"
+
+    return (
+        f"🔥 Fixture: <b>{fixture_score}/100</b>\n"
+        f"🧠 Combo: <b>{combo_score}/100</b>\n"
+        f"🏆 Grade: <b>{grade_badge(fixture_score)}</b>"
+    )
+
+
+def premium_combo_card(label, combo, stake=None):
+    if not combo:
+        return ""
+
+    lines = [
+        f"{label}",
+        "",
+        "🎯 <b>Pick</b>",
+        f"{compact_legs(combo['leg_names'])}",
+        "",
+        "📊 <b>Odds</b>",
+        f"{format_odds(combo['odds'])}",
+    ]
+
+    if stake is not None:
+        lines.extend([
+            "",
+            "💰 <b>Example</b>",
+            f"{money(stake)} → {money(float(stake) * float(combo['odds']))}",
+        ])
+
+    return "\n".join(lines)
+
+
+def daily_header(title, target_date=None, league_key=None, fixtures=None, qualified=None, min_score=None):
+    lines = [
+        "📚 <b>THE BLACK BOOK</b>",
+        title,
+        "",
+        f"📅 Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
+    ]
+
+    if league_key is not None:
+        lines.append(f"🏆 League: <b>{league_display_name(league_key)}</b>")
+
+    if fixtures is not None:
+        lines.append(f"Fixtures: <b>{fixtures}</b>")
+
+    if qualified is not None:
+        lines.append(f"Qualified: <b>{qualified}</b>")
+
+    if min_score is not None:
+        lines.append(f"Min Score: <b>{min_score}</b>")
+
+    return "\n".join(lines)
+
+
+def resolve_topic_id(topic_id):
+    if topic_id is None:
+        return None
+    try:
+        return int(str(topic_id).strip())
+    except Exception:
+        return None
+
+
 # =========================
 # Assessment engine
 # =========================
@@ -1135,112 +1228,7 @@ def build_combo_section(label, combo, stake):
     if not combo:
         return ""
 
-    return (
-        f"{label}\n"
-        f"{compact_legs(combo['leg_names'])}\n"
-        f"{format_odds(combo['odds'])} | {money(stake)} → {money(float(stake) * float(combo['odds']))}"
-    )
-
-
-
-def build_previewfootball_message(limit=5, target_date=None, sport_keys=None, league_key=None):
-    events, errors = fetch_football_odds(target_date, sport_keys)
-    rows = []
-
-    for event in events:
-        scored = score_football_event(event)
-        if not scored:
-            continue
-
-        setup = select_best_setup(scored)
-        assessed_score = fixture_assessment_score(scored, setup)
-
-        rows.append({
-            "event": event,
-            "scored": scored,
-            "setup": setup,
-            "assessed_score": assessed_score,
-        })
-
-    rows.sort(key=lambda r: (r["assessed_score"], r["setup"]["best_combo_score"]), reverse=True)
-
-    lines = [
-        "🧠 <b>THE BLACK BOOK PREVIEW</b>",
-        "",
-        f"Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
-        f"League: <b>{league_display_name(league_key)}</b>",
-        f"Fixtures: <b>{len(events)}</b>",
-        f"Post score: <b>{get_score_threshold()}</b>",
-        "",
-    ]
-
-    if not rows:
-        lines.append("No scorable fixtures found.")
-    else:
-        for index, row in enumerate(rows[:limit], start=1):
-            event = row["event"]
-            setup = row["setup"]
-            home = event.get("home_team", "Home")
-            away = event.get("away_team", "Away")
-            status = "✅ POST" if row["assessed_score"] >= get_score_threshold() else "❌ NO POST"
-            value = setup.get("value")
-            pick = value or setup.get("safe")
-
-            lines.append(
-                f"<b>{index}. {home} vs {away}</b>\n"
-                f"{status} | Fixture <b>{row['assessed_score']}/100</b> | Combo <b>{setup['best_combo_score']}/100</b>\n"
-                f"Pick: {compact_legs(pick['leg_names']) + ' @ ' + format_odds(pick['odds']) if pick else 'None'}\n"
-            )
-
-    if errors:
-        lines.append("<b>API notes:</b>")
-        for err in errors[:4]:
-            lines.append(f"• {err}")
-
-    return "\n".join(lines)
-
-
-def build_settings_message():
-    return (
-        "⚙️ <b>THE BLACK BOOK SETTINGS</b>\\n\\n"
-        f"Version: <b>{VERSION}</b>\\n"
-        f"Post score: <b>{get_score_threshold()}</b>\\n"
-        f"Max posts: <b>{MAX_FOOTBALL_POSTS}</b>\\n"
-        f"Max combo legs: <b>{MAX_COMBO_LEGS}</b>\\n"
-        f"Value combo min: <b>{MIN_VALUE_COMBO_SCORE}</b>\\n"
-        f"Risky combo min: <b>{MIN_RISKY_COMBO_SCORE}</b>\\n"
-        f"Sports: <code>{','.join(FOOTBALL_SPORT_KEYS)}</code>"
-    )
-
-# =========================
-# Bet setup generation
-# =========================
-
-def build_bet_section(label, stake, odds, legs, purpose, bookmaker=None, include=True):
-    if not include or odds is None or not legs:
-        return ""
-
-    return (
-        f"{label}\n"
-        f"{compact_legs(legs)}\n\n"
-        f"Odds: <b>{format_odds(odds)}</b>\n"
-        f"Stake: <b>{money(stake)}</b>\n"
-        f"Return: <b>{money(float(stake) * float(odds))}</b>"
-    )
-
-
-def generate_football_builds(scored):
-    setup = select_best_setup(scored)
-
-    sections = []
-
-    sections.append(build_combo_section("🟢 <b>SAFE</b>", setup.get("safe"), 10))
-    sections.append(build_combo_section("🔵 <b>COVER</b>", setup.get("cover"), 4))
-    sections.append(build_combo_section("🟡 <b>VALUE ⭐</b>", setup.get("value"), 10))
-    sections.append(build_combo_section("🔴 <b>RISKY ⚠️</b>", setup.get("risky"), 3))
-
-    return [section for section in sections if section.strip()]
-
+    return premium_combo_card(label, combo, stake=stake)
 
 
 def build_football_setup_message(scored):
@@ -1254,7 +1242,6 @@ def build_football_setup_message(scored):
     kickoff = kickoff_text(event.get("commence_time"))
 
     safe = setup.get("safe")
-    cover = setup.get("cover")
     value = setup.get("value")
     risky = setup.get("risky")
 
@@ -1266,26 +1253,25 @@ def build_football_setup_message(scored):
     if safe:
         sections.append(build_combo_section("🟢 <b>SAFE</b>", safe, 10))
 
-    if cover and cover != safe:
-        sections.append(build_combo_section("🔵 <b>COVER</b>", cover, 4))
-
     if value:
         sections.append(build_combo_section("🟡 <b>VALUE ⭐</b>", value, 10))
 
     if risky and risky != value:
         sections.append(build_combo_section("🔴 <b>RISKY ⚠️</b>", risky, 3))
 
-    bot_pick = "🟡 VALUE" if value else "🔴 RISKY"
+    bot_pick = "🟡 VALUE ⭐" if value else "🔴 RISKY ⚠️"
 
     return (
-        "📖 <b>THE BLACK BOOK</b>\n\n"
+        "📚 <b>THE BLACK BOOK SVR</b>\n\n"
         f"<b>{home} vs {away}</b>\n"
-        f"🏆 {compact_league_name(sport_key)} | ⏰ {kickoff}\n\n"
-        f"🔥 Fixture: <b>{assessed_score}/100</b> | 🧠 Combo: <b>{setup['best_combo_score']}/100</b>\n"
-        f"📊 <b>{quality_label(assessed_score)}</b>\n\n"
-        + "\n\n".join(sections)
-        + "\n\n🎯 <b>BOT PICK:</b> "
-        f"{bot_pick}"
+        f"🏆 {compact_league_name(sport_key)}\n"
+        f"🕒 {kickoff}\n\n"
+        f"{compact_score_line(assessed_score, setup['best_combo_score'])}\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        + "\n\n━━━━━━━━━━━━━━\n\n".join(sections)
+        + "\n\n━━━━━━━━━━━━━━\n"
+        f"🎯 <b>BLACK BOOK PICK:</b> {bot_pick}\n\n"
+        + black_book_footer()
     )
 
 
@@ -1548,13 +1534,24 @@ def build_acca_section(title, rows, combo_type, stake, min_odds, max_odds):
     ]
 
     for index, row in enumerate(selected, start=1):
-        lines.append(f"<b>{index}.</b> {acca_line(row, combo_type)}\n")
+        event = row["event"]
+        combo = row[combo_type]
+        home = event.get("home_team", "Home")
+        away = event.get("away_team", "Away")
+        kickoff = kickoff_text(event.get("commence_time"))
+
+        lines.append(
+            f"<b>{index}. {home} vs {away}</b>\n"
+            f"🕒 {kickoff}\n"
+            f"🎯 {compact_legs(combo['leg_names'])}\n"
+            f"📊 {format_odds(combo['odds'])} | 🔥 {row['assessment_score']}/100\n"
+        )
 
     lines.extend([
-        "━━━━━━━━━━",
-        f"Total odds: <b>{format_odds(total_odds)}</b>",
-        f"Stake: <b>{money(stake)}</b>",
-        f"Return: <b>{money(float(stake) * float(total_odds))}</b>",
+        "━━━━━━━━━━━━━━",
+        f"📊 Total odds: <b>{format_odds(total_odds)}</b>",
+        f"💰 Stake: <b>{money(stake)}</b>",
+        f"🏦 Return: <b>{money(float(stake) * float(total_odds))}</b>",
     ])
 
     return "\n".join(lines)
@@ -1586,15 +1583,16 @@ def build_daily_acca_message(target_date=None, sport_keys=None, league_key=None)
     rows.sort(key=lambda row: row["assessment_score"], reverse=True)
 
     lines = [
-        "🧾 <b>THE BLACK BOOK DAILY ACCAS</b>",
+        daily_header(
+            "🎟️ <b>DAILY ACCAS</b>",
+            target_date=target_date,
+            league_key=league_key,
+            fixtures=len(events),
+            qualified=len(rows),
+            min_score=DAILY_ACCA_MIN_SCORE,
+        ),
         "",
-        f"Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
-        f"League: <b>{league_display_name(league_key)}</b>",
-        f"Fixtures checked: <b>{len(events)}</b>",
-        f"Qualifying fixtures: <b>{len(rows)}</b>",
-        f"Min score: <b>{DAILY_ACCA_MIN_SCORE}</b>",
-        "",
-        "<i>Accas are built independently from singles to reduce duplicate risk.</i>",
+        "<i>Built independently from singles to reduce duplicate risk.</i>",
         "",
     ]
 
@@ -1625,6 +1623,8 @@ def build_daily_acca_message(target_date=None, sport_keys=None, league_key=None)
 
     lines.append("")
     lines.append("<i>Accas are higher risk. Keep stakes small.</i>")
+    lines.append("")
+    lines.append(black_book_footer())
 
     return "\n".join(lines)
 
