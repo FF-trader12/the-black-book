@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.6.7-command-function-fix"
+VERSION = "the-black-book-v0.3.7-world-cup-flags"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -388,6 +388,77 @@ def compact_league_name(sport_key):
     return mapping.get(str(sport_key), str(sport_key).replace("soccer_", "").replace("_", " ").title())
 
 
+WORLD_CUP_TEAM_FLAGS = {
+    "Mexico": "🇲🇽",
+    "South Africa": "🇿🇦",
+    "South Korea": "🇰🇷",
+    "Czechia": "🇨🇿",
+    "Canada": "🇨🇦",
+    "Bosnia and Herzegovina": "🇧🇦",
+    "Bosnia": "🇧🇦",
+    "Qatar": "🇶🇦",
+    "Switzerland": "🇨🇭",
+    "United States": "🇺🇸",
+    "USA": "🇺🇸",
+    "Paraguay": "🇵🇾",
+    "Australia": "🇦🇺",
+    "Turkey": "🇹🇷",
+    "Brazil": "🇧🇷",
+    "Morocco": "🇲🇦",
+    "Haiti": "🇭🇹",
+    "Scotland": "🏴",
+    "Germany": "🇩🇪",
+    "Curacao": "🇨🇼",
+    "Curaçao": "🇨🇼",
+    "Ivory Coast": "🇨🇮",
+    "Cote d'Ivoire": "🇨🇮",
+    "Ecuador": "🇪🇨",
+    "Netherlands": "🇳🇱",
+    "Japan": "🇯🇵",
+    "Sweden": "🇸🇪",
+    "Tunisia": "🇹🇳",
+    "Spain": "🇪🇸",
+    "Cape Verde": "🇨🇻",
+    "Saudi Arabia": "🇸🇦",
+    "Uruguay": "🇺🇾",
+    "Belgium": "🇧🇪",
+    "Egypt": "🇪🇬",
+    "Iran": "🇮🇷",
+    "New Zealand": "🇳🇿",
+    "France": "🇫🇷",
+    "Senegal": "🇸🇳",
+    "Iraq": "🇮🇶",
+    "Norway": "🇳🇴",
+    "Argentina": "🇦🇷",
+    "Algeria": "🇩🇿",
+    "Austria": "🇦🇹",
+    "Jordan": "🇯🇴",
+    "Portugal": "🇵🇹",
+    "DR Congo": "🇨🇩",
+    "Congo DR": "🇨🇩",
+    "Uzbekistan": "🇺🇿",
+    "Colombia": "🇨🇴",
+    "England": "🏴",
+    "Croatia": "🇭🇷",
+    "Ghana": "🇬🇭",
+    "Panama": "🇵🇦",
+}
+
+
+def team_flag(team_name):
+    name = str(team_name or "").strip()
+    return WORLD_CUP_TEAM_FLAGS.get(name, "⚽")
+
+
+def team_display(team_name):
+    name = str(team_name or "").strip()
+    return f"{team_flag(name)} {name}" if name else "⚽ Team"
+
+
+def fixture_display(home, away):
+    return f"{team_display(home)} vs {team_display(away)}"
+
+
 def quality_label(score):
     if score >= 90:
         return "ELITE"
@@ -421,6 +492,19 @@ def short_leg_name(leg):
     leg = leg.replace("BTTS No", "BTTS No")
     return leg
 
+
+
+def flagged_leg_name(name):
+    text = str(name or "")
+    # Add flags to simple market names without changing Over/Under/BTTS-only legs.
+    for team, flag in sorted(WORLD_CUP_TEAM_FLAGS.items(), key=lambda item: len(item[0]), reverse=True):
+        if text == team:
+            return f"{flag} {text}"
+        if text.startswith(team + " Win"):
+            return text.replace(team, f"{flag} {team}", 1)
+        if text.startswith(team + " "):
+            return text.replace(team, f"{flag} {team}", 1)
+    return text
 
 def compact_legs(legs):
     return " + ".join(short_leg_name(leg) for leg in legs)
@@ -1261,7 +1345,7 @@ def build_football_setup_message(scored):
     lines = [
         "📚 <b>THE BLACK BOOK SVR</b>",
         "",
-        f"<b>{home} vs {away}</b>",
+        f"<b>{fixture_display(home, away)}</b>",
         f"🏆 {compact_league_name(sport_key)} | 🕒 {kickoff}",
         "",
         f"🔥 Fixture: <b>{assessed_score}/100</b> | 🧠 Combo: <b>{setup['best_combo_score']}/100</b>",
@@ -1483,7 +1567,7 @@ def acca_line(row, combo_type):
     kickoff = kickoff_text(event.get("commence_time"))
 
     return (
-        f"<b>{home} vs {away}</b>\n"
+        f"<b>{fixture_display(home, away)}</b>\n"
         f"🕒 {kickoff}\n"
         f"{compact_legs(combo['leg_names'])}\n"
         f"{format_odds(combo['odds'])} | Score <b>{row['assessment_score']}/100</b>"
@@ -1553,7 +1637,7 @@ def build_acca_section(title, rows, combo_type, stake, min_odds, max_odds):
         kickoff = kickoff_text(event.get("commence_time"))
 
         lines.append(
-            f"<b>{index}. {home} vs {away}</b>\n"
+            f"<b>{index}. {fixture_display(home, away)}</b>\n"
             f"🕒 {kickoff}\n"
             f"🎯 {compact_legs(combo['leg_names'])}\n"
             f"📊 {format_odds(combo['odds'])} | 🔥 {row['assessment_score']}/100\n"
@@ -1686,7 +1770,7 @@ def build_previewfootball_message(limit=5, target_date=None, sport_keys=None, le
                 pick_text = f"{compact_legs(pick['leg_names'])} @ {format_odds(pick['odds'])}"
 
             lines.append(
-                f"<b>{index}. {home} vs {away}</b>\n"
+                f"<b>{index}. {fixture_display(home, away)}</b>\n"
                 f"{status} | Fixture <b>{row['assessed_score']}/100</b> | Combo <b>{setup['best_combo_score']}/100</b>\n"
                 f"Pick: {pick_text}\n"
             )
@@ -1734,7 +1818,7 @@ def build_start_message():
         "• /leagues - Show league filters\n• /sports - Show available soccer sport keys\n"
         "• /chatid - Show current chat/topic ID\n"
         "• /help - Show help menu\n\n"
-        "Find The Edge."
+        "Find The Edge.\n\n🌍 World Cup cards now include team flags."
     )
 
 
