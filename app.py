@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.6.2-compact-premium-svr"
+VERSION = "the-black-book-v0.3.6.3-topic-routing-fix"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -2032,14 +2032,14 @@ def telegram_webhook():
         elif lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow"):
             target_date, _, sport_keys, league_key = parse_scan_args("tomorrow")
             reply = build_daily_acca_message(target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_football_accas_message(reply)
 
         elif lower_text.startswith("/dailyacca") or lower_text.startswith("/acca"):
             command = text.split()[0]
             args_text = text[len(command):].strip()
             target_date, _, sport_keys, league_key = parse_scan_args(args_text)
             reply = build_daily_acca_message(target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_football_accas_message(reply)
 
         elif lower_text.startswith("/settings"):
             reply = build_settings_message()
