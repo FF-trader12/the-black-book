@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.7-world-cup-flags"
+VERSION = "the-black-book-v0.3.8-service-updates"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -406,7 +406,7 @@ WORLD_CUP_TEAM_FLAGS = {
     "Brazil": "🇧🇷",
     "Morocco": "🇲🇦",
     "Haiti": "🇭🇹",
-    "Scotland": "🏴",
+    "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
     "Germany": "🇩🇪",
     "Curacao": "🇨🇼",
     "Curaçao": "🇨🇼",
@@ -438,7 +438,8 @@ WORLD_CUP_TEAM_FLAGS = {
     "Congo DR": "🇨🇩",
     "Uzbekistan": "🇺🇿",
     "Colombia": "🇨🇴",
-    "England": "🏴",
+    "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+    "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
     "Croatia": "🇭🇷",
     "Ghana": "🇬🇭",
     "Panama": "🇵🇦",
@@ -1365,8 +1366,8 @@ def build_football_setup_message(scored):
         lines.append(premium_combo_card("🔴 <b>RISKY ⚠️</b>", risky, 3))
         lines.append("")
 
-    bot_pick = "🟡 VALUE" if value else "🔴 RISKY"
-    lines.append(f"🎯 <b>BOT PICK:</b> {bot_pick}")
+    bot_pick = None
+    lines.append(bot_pick_line(setup))
 
     return "\n".join(lines)
 
@@ -1796,6 +1797,273 @@ def build_settings_message():
     )
 
 
+
+# =========================
+# v3.8 Smarter BOT PICK + service updates
+# =========================
+
+def combo_fragility_penalty(combo):
+    if not combo:
+        return 0
+    names = combo.get("leg_names", [])
+    joined = " + ".join(names)
+    odds = float(combo.get("odds", 1) or 1)
+    score = int(combo.get("score", 50) or 50)
+    penalty = 0
+
+    if len(names) >= 2:
+        penalty += 8 * (len(names) - 1)
+    if "Under 2.5" in joined and any("Win" in x for x in names):
+        penalty += 20
+    elif "Under 2.5" in joined:
+        penalty += 10
+    if "BTTS" in joined and any("Win" in x for x in names):
+        penalty += 12
+    if odds >= 4:
+        penalty += 10
+    if odds >= 7:
+        penalty += 18
+
+    return max(0, min(100, score - penalty))
+
+
+def choose_bot_pick(setup):
+    candidates = []
+
+    if setup.get("safe"):
+        safe = setup["safe"]
+        candidates.append({
+            "key": "safe",
+            "label": "🟢 SAFE",
+            "combo": safe,
+            "reliability": combo_fragility_penalty(safe) + 8,
+            "reason": "Strongest reliability profile."
+        })
+
+    if setup.get("value"):
+        value = setup["value"]
+        names = " + ".join(value.get("leg_names", []))
+        reason = "Best balance of price and reliability."
+        if "Under 2.5" in names and any("Win" in x for x in value.get("leg_names", [])):
+            reason = "Winner read is stronger than the goals market."
+        candidates.append({
+            "key": "value",
+            "label": "🟡 VALUE",
+            "combo": value,
+            "reliability": combo_fragility_penalty(value),
+            "reason": reason
+        })
+
+    if setup.get("risky"):
+        risky = setup["risky"]
+        candidates.append({
+            "key": "risky",
+            "label": "🔴 RISKY",
+            "combo": risky,
+            "reliability": combo_fragility_penalty(risky) - 10,
+            "reason": "Higher upside, selected only when reliability still holds."
+        })
+
+    if not candidates:
+        return None
+
+    safe = next((x for x in candidates if x["key"] == "safe"), None)
+    value = next((x for x in candidates if x["key"] == "value"), None)
+    if safe and value:
+        value_names = " + ".join(value["combo"].get("leg_names", []))
+        if "Under 2.5" in value_names and value["reliability"] < safe["reliability"] + 6:
+            safe["reason"] = "Strong winner read, goals market less reliable."
+            return safe
+
+    candidates.sort(key=lambda x: x["reliability"], reverse=True)
+    return candidates[0]
+
+
+def bot_pick_line(setup):
+    pick = choose_bot_pick(setup)
+    if not pick:
+        return "🎯 <b>BOT PICK:</b> None"
+    return (
+        f"🎯 <b>BOT PICK:</b> {pick['label']}\n"
+        f"{compact_legs(pick['combo']['leg_names'])}\n"
+        f"<i>{pick['reason']}</i>"
+    )
+
+
+def london_today():
+    return now_utc().astimezone(ZoneInfo("Europe/London")).date()
+
+
+def london_tomorrow():
+    return london_today() + timedelta(days=1)
+
+
+def build_tomorrow_preview_message():
+    target_date = london_tomorrow()
+    events, errors = fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
+
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+        setup = select_best_setup(scored)
+        score = fixture_assessment_score(scored, setup)
+        if score >= get_score_threshold():
+            rows.append({"event": event, "setup": setup, "score": score, "pick": choose_bot_pick(setup)})
+
+    rows.sort(key=lambda r: r["score"], reverse=True)
+
+    lines = [
+        "📚 <b>THE BLACK BOOK</b>",
+        "🌙 <b>TOMORROW'S PREVIEW</b>",
+        "",
+        f"📅 Date: <b>{scan_date_label(target_date)}</b>",
+        f"Fixtures checked: <b>{len(events)}</b>",
+        f"Qualifying setups: <b>{len(rows)}</b>",
+        "",
+    ]
+
+    if not rows:
+        lines.append("No qualifying setups found for tomorrow yet.")
+    else:
+        lines.append("🔥 <b>Top Setups</b>\n")
+        for i, row in enumerate(rows[:5], start=1):
+            event = row["event"]
+            home = event.get("home_team", "Home")
+            away = event.get("away_team", "Away")
+            pick = row["pick"]
+            pick_text = "None"
+            if pick:
+                pick_text = f"{pick['label']} — {compact_legs(pick['combo']['leg_names'])}"
+            lines.append(
+                f"<b>{i}. {fixture_display(home, away)}</b>\n"
+                f"🔥 Fixture: <b>{row['score']}/100</b>\n"
+                f"🎯 {pick_text}\n"
+            )
+
+    if errors:
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
+
+    lines.extend(["━━━━━━━━━━━━━━", "Full accas posted in ⚽ Football Accas.", "📚 The Black Book", "Find The Edge."])
+    return "\n".join(lines)
+
+
+def build_matchday_update_message():
+    target_date = london_today()
+    events, errors = fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
+
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+        setup = select_best_setup(scored)
+        score = fixture_assessment_score(scored, setup)
+        if score >= get_score_threshold():
+            rows.append({"event": event, "setup": setup, "score": score, "pick": choose_bot_pick(setup)})
+
+    rows.sort(key=lambda r: r["score"], reverse=True)
+
+    lines = [
+        "📚 <b>THE BLACK BOOK</b>",
+        "🕛 <b>MATCH DAY UPDATE</b>",
+        "",
+        f"📅 Date: <b>{scan_date_label(target_date)}</b>",
+        f"Fixtures checked: <b>{len(events)}</b>",
+        f"Active setups: <b>{len(rows)}</b>",
+        "",
+    ]
+
+    if not rows:
+        lines.append("No active qualifying setups found.")
+    else:
+        top = rows[0]
+        event = top["event"]
+        home = event.get("home_team", "Home")
+        away = event.get("away_team", "Away")
+        lines.append("🔥 <b>Current Top Setup</b>")
+        lines.append(f"{fixture_display(home, away)}")
+        lines.append(f"Fixture: <b>{top['score']}/100</b>")
+        if top["pick"]:
+            lines.append(f"🎯 BOT PICK: <b>{top['pick']['label']}</b>")
+            lines.append(compact_legs(top["pick"]["combo"]["leg_names"]))
+        lines.append("\nNo unnecessary changes unless the data moves clearly.")
+
+    if errors:
+        lines.append("")
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
+
+    lines.extend(["━━━━━━━━━━━━━━", "📚 The Black Book", "Find The Edge."])
+    return "\n".join(lines)
+
+
+def build_final_call_message(event, setup, assessed_score):
+    home = event.get("home_team", "Home")
+    away = event.get("away_team", "Away")
+    pick = choose_bot_pick(setup)
+    lines = [
+        "🚨 <b>FINAL CALL</b>",
+        "",
+        "📚 <b>THE BLACK BOOK</b>",
+        "",
+        f"<b>{fixture_display(home, away)}</b>",
+        f"⏰ Kick Off: <b>{kickoff_text(event.get('commence_time'))}</b>",
+        "",
+        "━━━━━━━━━━━━━━",
+        "",
+        "🎯 <b>BEST BET</b>",
+    ]
+    if pick:
+        lines += [
+            f"<b>{pick['label']}</b>",
+            compact_legs(pick["combo"]["leg_names"]),
+            format_odds(pick["combo"]["odds"]),
+            "",
+            f"🔥 Fixture Score: <b>{assessed_score}/100</b>",
+            f"🧠 Combo Score: <b>{pick['combo'].get('score', 0)}/100</b>",
+            f"<i>{pick['reason']}</i>",
+        ]
+    else:
+        lines.append("No official bet available.")
+    lines += ["", "━━━━━━━━━━━━━━", "🍀 Good luck to everyone following.", "", "📚 The Black Book", "Find The Edge."]
+    return "\n".join(lines)
+
+
+def build_bets_closed_message(event, setup):
+    home = event.get("home_team", "Home")
+    away = event.get("away_team", "Away")
+    pick = choose_bot_pick(setup)
+    lines = [
+        "🔒 <b>BETS CLOSED</b>",
+        "",
+        "📚 <b>THE BLACK BOOK</b>",
+        "",
+        f"<b>{fixture_display(home, away)}</b>",
+        f"Kick Off: <b>{kickoff_text(event.get('commence_time'))}</b>",
+        "",
+        "All official selections are now locked.",
+        "",
+    ]
+    if pick:
+        lines += ["🎯 <b>Official Pick</b>", pick["label"], compact_legs(pick["combo"]["leg_names"]), ""]
+    lines += ["Results will be posted in:", "💰 Football Results", "", "📚 The Black Book", "Find The Edge."]
+    return "\n".join(lines)
+
+
+def run_tomorrow_preview():
+    send_to_football_topic(build_tomorrow_preview_message())
+    send_to_football_accas_topic(build_daily_acca_message(target_date=london_tomorrow(), sport_keys=FOOTBALL_SPORT_KEYS, league_key="all"))
+
+
+def run_matchday_update():
+    send_to_football_topic(build_matchday_update_message())
+
+
 # =========================
 # Bot messages
 # =========================
@@ -2099,6 +2367,13 @@ def delete_webhook():
 
 @app.route("/scheduled-scan", methods=["GET", "POST"])
 def scheduled_scan():
+    task = request.args.get("task", "").strip().lower()
+    if task == "tomorrow_preview":
+        run_tomorrow_preview()
+        return jsonify({"ok": True, "task": "tomorrow_preview"})
+    if task == "matchday_update":
+        run_matchday_update()
+        return jsonify({"ok": True, "task": "matchday_update"})
     result = run_football_scan(post_to_topic=True)
 
     return jsonify({
@@ -2261,6 +2536,14 @@ def telegram_webhook():
                 f"Racing Results: <b>{RACING_RESULTS_TOPIC_ID}</b>"
             )
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/tomorrowpreview"):
+            run_tomorrow_preview()
+            tg_response = send_telegram_message(chat_id, "🌙 Tomorrow preview sent.", thread_id=thread_id)
+
+        elif lower_text.startswith("/matchdayupdate"):
+            run_matchday_update()
+            tg_response = send_telegram_message(chat_id, "🕛 Match day update sent.", thread_id=thread_id)
 
         elif lower_text.startswith("/leagues"):
             reply = build_leagues_message()
