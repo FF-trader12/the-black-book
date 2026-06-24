@@ -20,7 +20,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.8.1-render-port-fix"
+VERSION = "the-black-book-v0.3.8.2-clean-unicode-flags"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -388,6 +388,17 @@ def compact_league_name(sport_key):
     return mapping.get(str(sport_key), str(sport_key).replace("soccer_", "").replace("_", " ").title())
 
 
+
+def subdivision_flag(code):
+    # Builds England/Scotland/Wales flags at runtime without hidden Unicode tag characters in source.
+    return "\U0001F3F4" + "".join(chr(0xE0000 + ord(ch)) for ch in code.lower()) + "\U000E007F"
+
+
+ENGLAND_FLAG = subdivision_flag("gbeng")
+SCOTLAND_FLAG = subdivision_flag("gbsct")
+WALES_FLAG = subdivision_flag("gbwls")
+
+
 WORLD_CUP_TEAM_FLAGS = {
     "Mexico": "🇲🇽",
     "South Africa": "🇿🇦",
@@ -406,7 +417,7 @@ WORLD_CUP_TEAM_FLAGS = {
     "Brazil": "🇧🇷",
     "Morocco": "🇲🇦",
     "Haiti": "🇭🇹",
-    "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "Scotland": SCOTLAND_FLAG,
     "Germany": "🇩🇪",
     "Curacao": "🇨🇼",
     "Curaçao": "🇨🇼",
@@ -438,8 +449,8 @@ WORLD_CUP_TEAM_FLAGS = {
     "Congo DR": "🇨🇩",
     "Uzbekistan": "🇺🇿",
     "Colombia": "🇨🇴",
-    "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
-    "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+    "England": ENGLAND_FLAG,
+    "Wales": WALES_FLAG,
     "Croatia": "🇭🇷",
     "Ghana": "🇬🇭",
     "Panama": "🇵🇦",
