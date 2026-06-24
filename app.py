@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import os
+import json
 import requests
 import itertools
 from datetime import datetime, timezone, timedelta
@@ -20,7 +21,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.8.2-clean-unicode-flags"
+VERSION = "the-black-book-v0.3.9-alert-automation"
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -2075,6 +2076,164 @@ def run_matchday_update():
     send_to_football_topic(build_matchday_update_message())
 
 
+
+# =========================
+# v3.9 Alert automation
+# =========================
+
+ALERT_STATE_FILE = os.environ.get("ALERT_STATE_FILE", "/tmp/black_book_alert_state.json")
+FINAL_CALL_MINUTES_BEFORE = int(os.environ.get("FINAL_CALL_MINUTES_BEFORE", "30") or 30)
+FINAL_CALL_WINDOW_MINUTES = int(os.environ.get("FINAL_CALL_WINDOW_MINUTES", "10") or 10)
+BETS_CLOSED_WINDOW_MINUTES = int(os.environ.get("BETS_CLOSED_WINDOW_MINUTES", "10") or 10)
+
+
+def load_alert_state():
+    try:
+        path = Path(ALERT_STATE_FILE)
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_alert_state(state):
+    try:
+        path = Path(ALERT_STATE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def alert_event_key(event):
+    home = str(event.get("home_team", "Home"))
+    away = str(event.get("away_team", "Away"))
+    commence = str(event.get("commence_time", ""))
+    sport = str(event.get("sport_key_used", event.get("sport_key", "football")))
+    return f"{sport}|{home}|{away}|{commence}"
+
+
+def minutes_until_kickoff(event):
+    kickoff = parse_event_datetime(event.get("commence_time"))
+    if not kickoff:
+        return None
+    now_london = now_utc().astimezone(ZoneInfo("Europe/London"))
+    kickoff_london = kickoff.astimezone(ZoneInfo("Europe/London"))
+    return (kickoff_london - now_london).total_seconds() / 60
+
+
+def build_alert_candidates(target_date=None):
+    target_date = target_date or london_today()
+    events, errors = fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
+
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+
+        setup = select_best_setup(scored)
+        assessed_score = fixture_assessment_score(scored, setup)
+
+        if assessed_score < get_score_threshold():
+            continue
+
+        mins = minutes_until_kickoff(event)
+        if mins is None:
+            continue
+
+        rows.append({
+            "event": event,
+            "setup": setup,
+            "score": assessed_score,
+            "minutes": mins,
+        })
+
+    rows.sort(key=lambda r: r["minutes"])
+    return rows, errors
+
+
+def run_final_call_alerts():
+    state = load_alert_state()
+    sent = 0
+    rows, errors = build_alert_candidates(london_today())
+
+    for row in rows:
+        mins = row["minutes"]
+        lower = FINAL_CALL_MINUTES_BEFORE - FINAL_CALL_WINDOW_MINUTES
+        upper = FINAL_CALL_MINUTES_BEFORE + FINAL_CALL_WINDOW_MINUTES
+
+        if not (lower <= mins <= upper):
+            continue
+
+        event_key = alert_event_key(row["event"])
+        state_key = f"final_call|{event_key}"
+
+        if state.get(state_key):
+            continue
+
+        send_to_football_topic(
+            build_final_call_message(row["event"], row["setup"], row["score"])
+        )
+        state[state_key] = now_utc().isoformat()
+        sent += 1
+
+    save_alert_state(state)
+    return {"sent": sent, "checked": len(rows), "errors": errors[:4]}
+
+
+def run_bets_closed_alerts():
+    state = load_alert_state()
+    sent = 0
+    rows, errors = build_alert_candidates(london_today())
+
+    for row in rows:
+        mins = row["minutes"]
+
+        if not (-BETS_CLOSED_WINDOW_MINUTES <= mins <= BETS_CLOSED_WINDOW_MINUTES):
+            continue
+
+        event_key = alert_event_key(row["event"])
+        state_key = f"bets_closed|{event_key}"
+
+        if state.get(state_key):
+            continue
+
+        send_to_football_topic(
+            build_bets_closed_message(row["event"], row["setup"])
+        )
+        state[state_key] = now_utc().isoformat()
+        sent += 1
+
+    save_alert_state(state)
+    return {"sent": sent, "checked": len(rows), "errors": errors[:4]}
+
+
+def run_alert_automation():
+    final_result = run_final_call_alerts()
+    closed_result = run_bets_closed_alerts()
+    return {
+        "ok": True,
+        "final_call": final_result,
+        "bets_closed": closed_result,
+    }
+
+
+def build_alert_status_message():
+    state = load_alert_state()
+    final_count = len([k for k in state if k.startswith("final_call|")])
+    closed_count = len([k for k in state if k.startswith("bets_closed|")])
+
+    return (
+        "🚨 <b>THE BLACK BOOK ALERTS</b>\n\n"
+        f"Final Call sent: <b>{final_count}</b>\n"
+        f"Bets Closed sent: <b>{closed_count}</b>\n\n"
+        f"Final Call timing: <b>{FINAL_CALL_MINUTES_BEFORE} mins before KO</b>\n"
+        "Duplicate protection: <b>ON</b>"
+    )
+
+
 # =========================
 # Bot messages
 # =========================
@@ -2379,6 +2538,12 @@ def delete_webhook():
 @app.route("/scheduled-scan", methods=["GET", "POST"])
 def scheduled_scan():
     task = request.args.get("task", "").strip().lower()
+    if task == "alerts":
+        return jsonify(run_alert_automation())
+    if task == "final_call":
+        return jsonify({"ok": True, "task": "final_call", **run_final_call_alerts()})
+    if task == "bets_closed":
+        return jsonify({"ok": True, "task": "bets_closed", **run_bets_closed_alerts()})
     if task == "tomorrow_preview":
         run_tomorrow_preview()
         return jsonify({"ok": True, "task": "tomorrow_preview"})
@@ -2555,6 +2720,18 @@ def telegram_webhook():
         elif lower_text.startswith("/matchdayupdate"):
             run_matchday_update()
             tg_response = send_telegram_message(chat_id, "🕛 Match day update sent.", thread_id=thread_id)
+
+        elif lower_text.startswith("/alerts"):
+            result = run_alert_automation()
+            reply = (
+                "🚨 <b>Alert automation checked.</b>\n\n"
+                f"Final Call sent: <b>{result['final_call']['sent']}</b>\n"
+                f"Bets Closed sent: <b>{result['bets_closed']['sent']}</b>"
+            )
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
+
+        elif lower_text.startswith("/alertstatus"):
+            tg_response = send_telegram_message(chat_id, build_alert_status_message(), thread_id=thread_id)
 
         elif lower_text.startswith("/leagues"):
             reply = build_leagues_message()
