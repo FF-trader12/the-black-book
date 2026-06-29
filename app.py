@@ -24,7 +24,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.10-premium-auto-routine"
+VERSION = "the-black-book-v0.3.10.1-member-chat-fix"
 
 ADMIN_USER_IDS = {
     x.strip()
