@@ -1,144 +1,148 @@
-from flask import Flask, request, jsonify import os import json import
-requests import itertools import threading import time from datetime
-import datetime, timezone, timedelta from zoneinfo import ZoneInfo from
-pathlib import Path
+from flask import Flask, request, jsonify
+import os
+import json
+import requests
+import itertools
+import threading
+import time
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
+from pathlib import Path
 
-app = Flask(name)
+app = Flask(__name__)
 
-=========================
+# =========================
+# THE BLACK BOOK v0.3.6
+# Premium SVR Formatting
+# =========================
 
-THE BLACK BOOK v4.0.1
+BOT_TOKEN = (
+    os.environ.get("TELEGRAM_BOT_TOKEN")
+    or os.environ.get("BOT_TOKEN")
+    or ""
+).strip()
 
-Foundation Build
+ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-=========================
+VERSION = "THE BLACK BOOK v4.0.1"
+LATEST_CHANGES = [
+    "General chat is permanently ignored by the bot.",
+    "Football SVR, Football Accas, Football Results and Members Chat routing is locked to topics.",
+    "Scheduler runs 07:30 Morning Briefing, 12:00 Match Day Update, 20:00 Tomorrow Preview + Accas, and 5-minute saved-fixture alerts.",
+    "Final Call and Bets Closed alerts read saved fixtures only, protecting free Odds API credits.",
+    "Local JSON storage added for fixtures, members, stats, alerts, version and cache.",
+    "Duplicate protection added for scheduled posts, welcomes and version updates.",
+    "Admin commands are restricted.",
+]
 
-BOT_TOKEN = ( os.environ.get(“TELEGRAM_BOT_TOKEN”) or
-os.environ.get(“BOT_TOKEN”) or “” ).strip()
 
-ODDS_API_KEY = os.environ.get(“THE_ODDS_API_KEY”, ““).strip()
+# Telegram topic routing
+MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
+FOOTBALL_CHAT_ID = os.environ.get("FOOTBALL_CHAT_ID", MAIN_CHAT_ID).strip()
 
-VERSION = “THE BLACK BOOK v4.0.1” LATEST_CHANGES = [ “Production
-foundation rebuild”, “General chat permanently ignored”, “Topic-only
-routing for football, accas, results and members”, “UK scheduler with
-local cache and duplicate protection”, “Admin-only controls for
-settings, score, chat IDs, storage and updates”,] VERSION_CODE = “4.0.1”
+# Old generic football topic retained only for backwards compatibility.
+FOOTBALL_TOPIC_ID = int(os.environ.get("FOOTBALL_TOPIC_ID", "13") or 13)
 
-Telegram topic routing
+# New topic layout
+FOOTBALL_SVR_TOPIC_ID = int(os.environ.get("FOOTBALL_SVR_TOPIC_ID", "235") or 235)
+FOOTBALL_ACCAS_TOPIC_ID = int(os.environ.get("FOOTBALL_ACCAS_TOPIC_ID", "238") or 238)
+FOOTBALL_RESULTS_TOPIC_ID = int(os.environ.get("FOOTBALL_RESULTS_TOPIC_ID", "241") or 241)
 
-MAIN_CHAT_ID = os.environ.get(“MAIN_CHAT_ID”, “-1004368159147”).strip()
-FOOTBALL_CHAT_ID = os.environ.get(“FOOTBALL_CHAT_ID”,
-MAIN_CHAT_ID).strip()
+RACING_SVR_TOPIC_ID = int(os.environ.get("RACING_SVR_TOPIC_ID", "244") or 244)
+RACING_ACCAS_TOPIC_ID = int(os.environ.get("RACING_ACCAS_TOPIC_ID", "247") or 247)
+RACING_RESULTS_TOPIC_ID = int(os.environ.get("RACING_RESULTS_TOPIC_ID", "250") or 250)
 
-General chat is permanently closed. Do not send any messages without a topic.
+RACING_TOPIC_ID = RACING_SVR_TOPIC_ID
+RUGBY_TOPIC_ID = int(os.environ.get("RUGBY_TOPIC_ID", "15") or 15)
 
-FOOTBALL_TOPIC_ID = None
-
-New topic layout
-
-FOOTBALL_SVR_TOPIC_ID = int(os.environ.get(“FOOTBALL_SVR_TOPIC_ID”,
-“235”) or 235) FOOTBALL_ACCAS_TOPIC_ID =
-int(os.environ.get(“FOOTBALL_ACCAS_TOPIC_ID”, “238”) or 238)
-FOOTBALL_RESULTS_TOPIC_ID =
-int(os.environ.get(“FOOTBALL_RESULTS_TOPIC_ID”, “241”) or 241)
-
-RACING_SVR_TOPIC_ID = int(os.environ.get(“RACING_SVR_TOPIC_ID”, “244”)
-or 244) RACING_ACCAS_TOPIC_ID =
-int(os.environ.get(“RACING_ACCAS_TOPIC_ID”, “247”) or 247)
-RACING_RESULTS_TOPIC_ID = int(os.environ.get(“RACING_RESULTS_TOPIC_ID”,
-“250”) or 250)
-
-RACING_TOPIC_ID = RACING_SVR_TOPIC_ID RUGBY_TOPIC_ID =
-int(os.environ.get(“RUGBY_TOPIC_ID”, “15”) or 15)
-
-v4.0 Foundation config
-
-MEMBERS_CHAT_TOPIC_ID = int(os.environ.get(“MEMBERS_CHAT_TOPIC_ID”,
-“421”) or 421) DATA_DIR = os.environ.get(“BLACK_BOOK_DATA_DIR”, “/tmp”)
-FIXTURE_STORE_FILE = os.environ.get(“FIXTURE_STORE_FILE”,
-f”{DATA_DIR}/fixtures.json”) MEMBERS_FILE =
-os.environ.get(“MEMBERS_FILE”, f”{DATA_DIR}/members.json”) STATS_FILE =
-os.environ.get(“STATS_FILE”, f”{DATA_DIR}/stats.json”) ALERTS_FILE =
-os.environ.get(“ALERTS_FILE”, f”{DATA_DIR}/alerts.json”) VERSION_FILE =
-os.environ.get(“VERSION_FILE”, f”{DATA_DIR}/version.json”) CACHE_FILE =
-os.environ.get(“CACHE_FILE”, f”{DATA_DIR}/cache.json”)
-SCHEDULER_STATE_FILE = os.environ.get(“SCHEDULER_STATE_FILE”,
-ALERTS_FILE) RELEASE_NOTES_FILE = os.environ.get(“RELEASE_NOTES_FILE”,
-VERSION_FILE) ADMIN_USER_IDS = {x.strip() for x in
-os.environ.get(“ADMIN_USER_IDS”, ““).split(”,“) if x.strip()}
-MORNING_UPDATE_HOUR = int(os.environ.get(”MORNING_UPDATE_HOUR”, “7”) or
-7) MORNING_UPDATE_MINUTE = int(os.environ.get(“MORNING_UPDATE_MINUTE”,
-“30”) or 30) MATCHDAY_UPDATE_HOUR =
-int(os.environ.get(“MATCHDAY_UPDATE_HOUR”, “12”) or 12)
-MATCHDAY_UPDATE_MINUTE = int(os.environ.get(“MATCHDAY_UPDATE_MINUTE”,
-“0”) or 0) TOMORROW_PREVIEW_HOUR =
-int(os.environ.get(“TOMORROW_PREVIEW_HOUR”, “20”) or 20)
-TOMORROW_PREVIEW_MINUTE = int(os.environ.get(“TOMORROW_PREVIEW_MINUTE”,
-“0”) or 0) AUTO_SCHEDULER_ENABLED =
-os.environ.get(“AUTO_SCHEDULER_ENABLED”, “true”).lower() in (“1”,
-“true”, “yes”, “on”) LOCAL_DATA_NOTICE = ( “Fixture memory and future
-stats are currently saved locally.” “They may reset after code updates
-until permanent Render disk storage is added.” )
-
-Scanner settings
-
-MIN_FOOTBALL_SCORE = int(os.environ.get(“MIN_FOOTBALL_SCORE”, “65”) or
-65) MAX_FOOTBALL_POSTS = int(os.environ.get(“MAX_FOOTBALL_POSTS”, “3”)
-or 3) CURRENT_MIN_FOOTBALL_SCORE = MIN_FOOTBALL_SCORE
-MIN_VALUE_COMBO_SCORE = int(os.environ.get(“MIN_VALUE_COMBO_SCORE”,
-“58”) or 58) MIN_RISKY_COMBO_SCORE =
-int(os.environ.get(“MIN_RISKY_COMBO_SCORE”, “55”) or 55) MAX_COMBO_LEGS
-= int(os.environ.get(“MAX_COMBO_LEGS”, “3”) or 3) DAILY_ACCA_MIN_SCORE =
-int(os.environ.get(“DAILY_ACCA_MIN_SCORE”, “70”) or 70)
-DAILY_ACCA_MAX_LEGS = int(os.environ.get(“DAILY_ACCA_MAX_LEGS”, “4”) or
-4) SAFE_ACCA_MIN_ODDS = float(os.environ.get(“SAFE_ACCA_MIN_ODDS”,
-“3.0”) or 3.0) SAFE_ACCA_MAX_ODDS =
-float(os.environ.get(“SAFE_ACCA_MAX_ODDS”, “7.0”) or 7.0)
-VALUE_ACCA_MIN_ODDS = float(os.environ.get(“VALUE_ACCA_MIN_ODDS”, “7.0”)
-or 7.0) VALUE_ACCA_MAX_ODDS =
-float(os.environ.get(“VALUE_ACCA_MAX_ODDS”, “13.0”) or 13.0)
-RISKY_ACCA_MIN_ODDS = float(os.environ.get(“RISKY_ACCA_MIN_ODDS”,
-“16.0”) or 16.0) RISKY_ACCA_MAX_ODDS =
-float(os.environ.get(“RISKY_ACCA_MAX_ODDS”, “26.0”) or 26.0)
-
-Keep this controlled so the free Odds API credits do not get burned.
-
-FOOTBALL_SPORT_KEYS = [ x.strip() for x in os.environ.get(
-“FOOTBALL_SPORT_KEYS”,
-“soccer_epl,soccer_uefa_champs_league,soccer_uefa_europa_league,soccer_fifa_world_cup”
-).split(“,”) if x.strip()]
-
-ODDS_REGION = os.environ.get(“ODDS_REGION”, “uk”) ODDS_MARKETS =
-os.environ.get(“ODDS_MARKETS”, “h2h”) EXTRA_MARKETS_TO_TEST =
-os.environ.get( “EXTRA_MARKETS_TO_TEST”,
-“h2h,totals,btts,spreads,alternate_spreads,alternate_totals,team_totals,draw_no_bet,double_chance,player_goalscorer,player_shots,corners,cards”
+# v4.0.1 Foundation config
+MEMBERS_CHAT_TOPIC_ID = int(os.environ.get("MEMBERS_CHAT_TOPIC_ID", "421") or 421)
+DATA_DIR = Path(os.environ.get("BLACK_BOOK_DATA_DIR", "/tmp/the_black_book"))
+FIXTURE_STORE_FILE = os.environ.get("FIXTURE_STORE_FILE", str(DATA_DIR / "fixtures.json"))
+MEMBERS_FILE = os.environ.get("MEMBERS_FILE", str(DATA_DIR / "members.json"))
+STATS_FILE = os.environ.get("STATS_FILE", str(DATA_DIR / "stats.json"))
+ALERTS_FILE = os.environ.get("ALERTS_FILE", str(DATA_DIR / "alerts.json"))
+VERSION_FILE = os.environ.get("VERSION_FILE", str(DATA_DIR / "version.json"))
+CACHE_FILE = os.environ.get("CACHE_FILE", str(DATA_DIR / "cache.json"))
+SCHEDULER_STATE_FILE = os.environ.get("SCHEDULER_STATE_FILE", str(DATA_DIR / "scheduler.json"))
+RELEASE_NOTES_FILE = VERSION_FILE
+ADMIN_USER_IDS = {x.strip() for x in os.environ.get("ADMIN_USER_IDS", "").split(",") if x.strip()}
+MORNING_UPDATE_HOUR = int(os.environ.get("MORNING_UPDATE_HOUR", "7") or 7)
+MORNING_UPDATE_MINUTE = int(os.environ.get("MORNING_UPDATE_MINUTE", "30") or 30)
+MATCHDAY_UPDATE_HOUR = int(os.environ.get("MATCHDAY_UPDATE_HOUR", "12") or 12)
+MATCHDAY_UPDATE_MINUTE = int(os.environ.get("MATCHDAY_UPDATE_MINUTE", "0") or 0)
+TOMORROW_PREVIEW_HOUR = int(os.environ.get("TOMORROW_PREVIEW_HOUR", "20") or 20)
+TOMORROW_PREVIEW_MINUTE = int(os.environ.get("TOMORROW_PREVIEW_MINUTE", "0") or 0)
+AUTO_SCHEDULER_ENABLED = os.environ.get("AUTO_SCHEDULER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+LOCAL_DATA_NOTICE = (
+    "Fixture memory and future stats are currently saved locally. "
+    "They may reset after code updates until permanent Render disk storage is added."
 )
 
-=========================
 
-Telegram helpers
+# Scanner settings
+MIN_FOOTBALL_SCORE = int(os.environ.get("MIN_FOOTBALL_SCORE", "65") or 65)
+MAX_FOOTBALL_POSTS = int(os.environ.get("MAX_FOOTBALL_POSTS", "3") or 3)
+CURRENT_MIN_FOOTBALL_SCORE = MIN_FOOTBALL_SCORE
+MIN_VALUE_COMBO_SCORE = int(os.environ.get("MIN_VALUE_COMBO_SCORE", "58") or 58)
+MIN_RISKY_COMBO_SCORE = int(os.environ.get("MIN_RISKY_COMBO_SCORE", "55") or 55)
+MAX_COMBO_LEGS = int(os.environ.get("MAX_COMBO_LEGS", "3") or 3)
+DAILY_ACCA_MIN_SCORE = int(os.environ.get("DAILY_ACCA_MIN_SCORE", "70") or 70)
+DAILY_ACCA_MAX_LEGS = int(os.environ.get("DAILY_ACCA_MAX_LEGS", "4") or 4)
+SAFE_ACCA_MIN_ODDS = float(os.environ.get("SAFE_ACCA_MIN_ODDS", "3.0") or 3.0)
+SAFE_ACCA_MAX_ODDS = float(os.environ.get("SAFE_ACCA_MAX_ODDS", "7.0") or 7.0)
+VALUE_ACCA_MIN_ODDS = float(os.environ.get("VALUE_ACCA_MIN_ODDS", "7.0") or 7.0)
+VALUE_ACCA_MAX_ODDS = float(os.environ.get("VALUE_ACCA_MAX_ODDS", "13.0") or 13.0)
+RISKY_ACCA_MIN_ODDS = float(os.environ.get("RISKY_ACCA_MIN_ODDS", "16.0") or 16.0)
+RISKY_ACCA_MAX_ODDS = float(os.environ.get("RISKY_ACCA_MAX_ODDS", "26.0") or 26.0)
 
-=========================
+# Keep this controlled so the free Odds API credits do not get burned.
+FOOTBALL_SPORT_KEYS = [
+    x.strip()
+    for x in os.environ.get(
+        "FOOTBALL_SPORT_KEYS",
+        "soccer_epl,soccer_uefa_champs_league,soccer_uefa_europa_league,soccer_fifa_world_cup"
+    ).split(",")
+    if x.strip()
+]
 
-def now_utc(): return datetime.now(timezone.utc)
+ODDS_REGION = os.environ.get("ODDS_REGION", "uk")
+ODDS_MARKETS = os.environ.get("ODDS_MARKETS", "h2h")
+EXTRA_MARKETS_TO_TEST = os.environ.get(
+    "EXTRA_MARKETS_TO_TEST",
+    "h2h,totals,btts,spreads,alternate_spreads,alternate_totals,team_totals,draw_no_bet,double_chance,player_goalscorer,player_shots,corners,cards"
+)
 
-def api_url(method: str) -> str: return
-f”https://api.telegram.org/bot{BOT_TOKEN}/{method}”
 
-class IgnoredGeneralResponse: status_code = 200 text = “general chat
-ignored”
+# =========================
+# Telegram helpers
+# =========================
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def api_url(method: str) -> str:
+    return f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+
+
+
+
+class BlockedTelegramResponse:
+    status_code = 200
+    text = "general_chat_blocked"
 
     def json(self):
-        return {"ok": True, "ignored": "general_chat_closed"}
+        return {"ok": True, "blocked": "general_chat_ignored"}
 
-def is_general_chat_message(chat_id, thread_id=None): return
-str(chat_id) == str(FOOTBALL_CHAT_ID) and thread_id is None
 
-def send_telegram_message(chat_id, text: str, thread_id=None): # v4.0.1
-safety rail: the main/general group has been closed permanently. # Any
-message aimed at the group without a topic is ignored rather than sent.
-if is_general_chat_message(chat_id, thread_id): return
-IgnoredGeneralResponse()
+def is_general_chat_target(chat_id, thread_id):
+    # In a Telegram forum supergroup, messages without a topic/thread ID are General.
+    # The Black Book v4.0.1 never posts there.
+    return str(chat_id) == str(FOOTBALL_CHAT_ID) and thread_id is None
+def send_telegram_message(chat_id, text: str, thread_id=None):
+    if is_general_chat_target(chat_id, thread_id):
+        return BlockedTelegramResponse()
 
     payload = {
         "chat_id": chat_id,
@@ -152,36 +156,58 @@ IgnoredGeneralResponse()
 
     return requests.post(api_url("sendMessage"), json=payload, timeout=20)
 
-def send_to_football_topic(text: str): # Individual football SVR cards
-always go to Football SVR topic. return send_telegram_message(
-FOOTBALL_CHAT_ID, text, thread_id=FOOTBALL_SVR_TOPIC_ID, )
 
-def send_to_football_accas_topic(text: str): # Daily accas always go to
-Football Accas topic. return send_telegram_message( FOOTBALL_CHAT_ID,
-text, thread_id=FOOTBALL_ACCAS_TOPIC_ID, )
+def send_to_football_topic(text: str):
+    # Individual football SVR cards always go to Football SVR topic.
+    return send_telegram_message(
+        FOOTBALL_CHAT_ID,
+        text,
+        thread_id=FOOTBALL_SVR_TOPIC_ID,
+    )
 
-def send_football_accas_message(text): # Alias used by command handlers.
-return send_to_football_accas_topic(text)
 
-def send_to_football_results_topic(text: str): return
-send_telegram_message( FOOTBALL_CHAT_ID, text,
-thread_id=FOOTBALL_RESULTS_TOPIC_ID, )
+def send_to_football_accas_topic(text: str):
+    # Daily accas always go to Football Accas topic.
+    return send_telegram_message(
+        FOOTBALL_CHAT_ID,
+        text,
+        thread_id=FOOTBALL_ACCAS_TOPIC_ID,
+    )
 
-=========================
 
-Formatting helpers
+def send_football_accas_message(text):
+    # Alias used by command handlers.
+    return send_to_football_accas_topic(text)
 
-=========================
 
-def money(amount): try: value = float(amount) except Exception: return
-“£0”
+def send_to_football_results_topic(text: str):
+    return send_telegram_message(
+        FOOTBALL_CHAT_ID,
+        text,
+        thread_id=FOOTBALL_RESULTS_TOPIC_ID,
+    )
+
+
+# =========================
+# Formatting helpers
+# =========================
+
+def money(amount):
+    try:
+        value = float(amount)
+    except Exception:
+        return "£0"
 
     if value == int(value):
         return f"£{int(value)}"
     return f"£{value:.2f}"
 
-def decimal_to_fractional(decimal_odds): try: decimal_odds =
-float(decimal_odds) except Exception: return “N/A”
+
+def decimal_to_fractional(decimal_odds):
+    try:
+        decimal_odds = float(decimal_odds)
+    except Exception:
+        return "N/A"
 
     if decimal_odds <= 1:
         return "N/A"
@@ -204,19 +230,36 @@ float(decimal_odds) except Exception: return “N/A”
 
     return f"{best_num}/{best_den}"
 
-def format_odds(decimal_odds): try: decimal_odds = float(decimal_odds)
-return decimal_to_fractional(decimal_odds) except Exception: return
-“N/A”
 
-def implied_probability(decimal_odds): try: decimal_odds =
-float(decimal_odds) if decimal_odds <= 0: return 0 return 1 /
-decimal_odds except Exception: return 0
+def format_odds(decimal_odds):
+    try:
+        decimal_odds = float(decimal_odds)
+        return decimal_to_fractional(decimal_odds)
+    except Exception:
+        return "N/A"
 
-def safe_float(value, default=None): try: return float(value) except
-Exception: return default
 
-def kickoff_text(commence_time): raw = str(commence_time or ““).strip()
-if not raw: return”Unknown”
+def implied_probability(decimal_odds):
+    try:
+        decimal_odds = float(decimal_odds)
+        if decimal_odds <= 0:
+            return 0
+        return 1 / decimal_odds
+    except Exception:
+        return 0
+
+
+def safe_float(value, default=None):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def kickoff_text(commence_time):
+    raw = str(commence_time or "").strip()
+    if not raw:
+        return "Unknown"
 
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -225,21 +268,29 @@ if not raw: return”Unknown”
     except Exception:
         return raw
 
-def parse_event_datetime(commence_time): raw = str(commence_time or
-““).strip() if not raw: return None try: return
-datetime.fromisoformat(raw.replace(”Z”,
-“+00:00”)).astimezone(timezone.utc) except Exception: return None
 
-def is_event_today(event): event_dt =
-parse_event_datetime(event.get(“commence_time”)) if not event_dt: return
-False
+def parse_event_datetime(commence_time):
+    raw = str(commence_time or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def is_event_today(event):
+    event_dt = parse_event_datetime(event.get("commence_time"))
+    if not event_dt:
+        return False
 
     start = now_utc().replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
     return start <= event_dt < end
 
-def parse_scan_date(args_text=““): raw = str(args_text
-or”“).strip().lower()
+
+def parse_scan_date(args_text=""):
+    raw = str(args_text or "").strip().lower()
 
     if not raw:
         return now_utc().date(), "today"
@@ -273,7 +324,9 @@ or”“).strip().lower()
 
     return now_utc().date(), "today"
 
-def parse_scan_args(args_text=““): global FOOTBALL_LEAGUE_ALIASES
+
+def parse_scan_args(args_text=""):
+    global FOOTBALL_LEAGUE_ALIASES
 
     if "FOOTBALL_LEAGUE_ALIASES" not in globals():
         FOOTBALL_LEAGUE_ALIASES = {
@@ -313,106 +366,231 @@ def parse_scan_args(args_text=““): global FOOTBALL_LEAGUE_ALIASES
     league_label = league_key or "default"
     return target_date, date_label, sport_keys, league_label
 
-def league_display_name(league_key): names = { “worldcup”: “World Cup”,
-“world”: “World Cup”, “wc”: “World Cup”, “epl”: “Premier League”,
-“prem”: “Premier League”, “premierleague”: “Premier League”, “ucl”:
-“Champions League”, “championsleague”: “Champions League”, “uel”:
-“Europa League”, “europaleague”: “Europa League”, “laliga”: “La Liga”,
-“spain”: “La Liga”, “bundesliga”: “Bundesliga”, “seriea”: “Serie A”,
-“ligue1”: “Ligue 1”, “all”: “All Leagues”, “default”: “Default Leagues”,
-} return names.get(str(league_key or “default”), str(league_key or
-“default”).title())
 
-def build_leagues_message(): return “”.join([ “⚽ THE BLACK BOOK
-LEAGUES”, ““,”Examples:“,”/previewfootball worldcup“,”/scanfootball
-20.06.26 worldcup“,”/dailyacca tomorrow all“,”“,”Filters:“,”• worldcup”,
-“• epl”, “• ucl”, “• uel”, “• laliga”, “• bundesliga”, “• seriea”, “•
-ligue1”, “• all”, ““,”Configured sport keys:“,
-f”{‘,’.join(FOOTBALL_SPORT_KEYS)}“, ])
+def league_display_name(league_key):
+    names = {
+        "worldcup": "World Cup",
+        "world": "World Cup",
+        "wc": "World Cup",
+        "epl": "Premier League",
+        "prem": "Premier League",
+        "premierleague": "Premier League",
+        "ucl": "Champions League",
+        "championsleague": "Champions League",
+        "uel": "Europa League",
+        "europaleague": "Europa League",
+        "laliga": "La Liga",
+        "spain": "La Liga",
+        "bundesliga": "Bundesliga",
+        "seriea": "Serie A",
+        "ligue1": "Ligue 1",
+        "all": "All Leagues",
+        "default": "Default Leagues",
+    }
+    return names.get(str(league_key or "default"), str(league_key or "default").title())
 
-def event_is_on_date(event, target_date): event_dt =
-parse_event_datetime(event.get(“commence_time”)) if not event_dt: return
-False return event_dt.date() == target_date
 
-def scan_date_label(target_date): try: return target_date.strftime(“%d
-%b %Y”) except Exception: return “Selected date”
+def build_leagues_message():
+    return "\n".join([
+        "⚽ <b>THE BLACK BOOK LEAGUES</b>",
+        "",
+        "<b>Examples:</b>",
+        "<code>/previewfootball worldcup</code>",
+        "<code>/scanfootball 20.06.26 worldcup</code>",
+        "<code>/dailyacca tomorrow all</code>",
+        "",
+        "<b>Filters:</b>",
+        "• worldcup",
+        "• epl",
+        "• ucl",
+        "• uel",
+        "• laliga",
+        "• bundesliga",
+        "• seriea",
+        "• ligue1",
+        "• all",
+        "",
+        "<b>Configured sport keys:</b>",
+        f"<code>{','.join(FOOTBALL_SPORT_KEYS)}</code>",
+    ])
 
-def compact_league_name(sport_key): mapping = { “soccer_epl”: “EPL”,
-“soccer_fifa_world_cup”: “World Cup”, “soccer_italy_serie_a”: “Serie A”,
-“soccer_germany_dfb_pokal”: “DFB-Pokal”, “soccer_sweden_allsvenskan”:
-“Sweden”, “soccer_norway_eliteserien”: “Norway”,
-“soccer_league_of_ireland”: “Ireland”,
-“soccer_conmebol_copa_libertadores”: “Libertadores”,
-“soccer_conmebol_copa_sudamericana”: “Sudamericana”, } return
-mapping.get(str(sport_key), str(sport_key).replace(“soccer_”,
-““).replace(”_“,” “).title())
 
-def subdivision_flag(code): # Builds England/Scotland/Wales flags at
-runtime without hidden Unicode tag characters in source. return
-“001F3F4” + ““.join(chr(0xE0000 + ord(ch)) for ch in code.lower())
-+”00E007F”
+def event_is_on_date(event, target_date):
+    event_dt = parse_event_datetime(event.get("commence_time"))
+    if not event_dt:
+        return False
+    return event_dt.date() == target_date
 
-ENGLAND_FLAG = subdivision_flag(“gbeng”) SCOTLAND_FLAG =
-subdivision_flag(“gbsct”) WALES_FLAG = subdivision_flag(“gbwls”)
 
-WORLD_CUP_TEAM_FLAGS = { “Mexico”: “🇲🇽”, “South Africa”: “🇿🇦”, “South
-Korea”: “🇰🇷”, “Czechia”: “🇨🇿”, “Canada”: “🇨🇦”, “Bosnia and Herzegovina”:
-“🇧🇦”, “Bosnia”: “🇧🇦”, “Qatar”: “🇶🇦”, “Switzerland”: “🇨🇭”, “United
-States”: “🇺🇸”, “USA”: “🇺🇸”, “Paraguay”: “🇵🇾”, “Australia”: “🇦🇺”,
-“Turkey”: “🇹🇷”, “Brazil”: “🇧🇷”, “Morocco”: “🇲🇦”, “Haiti”: “🇭🇹”,
-“Scotland”: SCOTLAND_FLAG, “Germany”: “🇩🇪”, “Curacao”: “🇨🇼”, “Curaçao”:
-“🇨🇼”, “Ivory Coast”: “🇨🇮”, “Cote d’Ivoire”: “🇨🇮”, “Ecuador”: “🇪🇨”,
-“Netherlands”: “🇳🇱”, “Japan”: “🇯🇵”, “Sweden”: “🇸🇪”, “Tunisia”: “🇹🇳”,
-“Spain”: “🇪🇸”, “Cape Verde”: “🇨🇻”, “Saudi Arabia”: “🇸🇦”, “Uruguay”:
-“🇺🇾”, “Belgium”: “🇧🇪”, “Egypt”: “🇪🇬”, “Iran”: “🇮🇷”, “New Zealand”: “🇳🇿”,
-“France”: “🇫🇷”, “Senegal”: “🇸🇳”, “Iraq”: “🇮🇶”, “Norway”: “🇳🇴”,
-“Argentina”: “🇦🇷”, “Algeria”: “🇩🇿”, “Austria”: “🇦🇹”, “Jordan”: “🇯🇴”,
-“Portugal”: “🇵🇹”, “DR Congo”: “🇨🇩”, “Congo DR”: “🇨🇩”, “Uzbekistan”:
-“🇺🇿”, “Colombia”: “🇨🇴”, “England”: ENGLAND_FLAG, “Wales”: WALES_FLAG,
-“Croatia”: “🇭🇷”, “Ghana”: “🇬🇭”, “Panama”: “🇵🇦”, }
+def scan_date_label(target_date):
+    try:
+        return target_date.strftime("%d %b %Y")
+    except Exception:
+        return "Selected date"
 
-def team_flag(team_name): name = str(team_name or ““).strip() return
-WORLD_CUP_TEAM_FLAGS.get(name,”⚽“)
 
-def team_display(team_name): name = str(team_name or ““).strip() return
-f”{team_flag(name)} {name}” if name else “⚽ Team”
+def compact_league_name(sport_key):
+    mapping = {
+        "soccer_epl": "EPL",
+        "soccer_fifa_world_cup": "World Cup",
+        "soccer_italy_serie_a": "Serie A",
+        "soccer_germany_dfb_pokal": "DFB-Pokal",
+        "soccer_sweden_allsvenskan": "Sweden",
+        "soccer_norway_eliteserien": "Norway",
+        "soccer_league_of_ireland": "Ireland",
+        "soccer_conmebol_copa_libertadores": "Libertadores",
+        "soccer_conmebol_copa_sudamericana": "Sudamericana",
+    }
+    return mapping.get(str(sport_key), str(sport_key).replace("soccer_", "").replace("_", " ").title())
 
-def fixture_display(home, away): return f”{team_display(home)} vs
-{team_display(away)}”
 
-def quality_label(score): if score >= 90: return “ELITE” if score >= 80:
-return “STRONG” if score >= 70: return “GOOD” if score >= 60: return
-“WATCHLIST” return “LOW EDGE”
 
-def clean_api_error(error_text): text = str(error_text) if “apiKey=” in
-text: text = text.split(“apiKey=”)[0] + “apiKey=HIDDEN” if “422 Client
-Error” in text: return “market not supported” if “429 Client Error” in
-text: return “API credit/rate limit hit” if “401 Client Error” in text:
-return “API key issue” return text[:160]
+def subdivision_flag(code):
+    # Builds England/Scotland/Wales flags at runtime without hidden Unicode tag characters in source.
+    return "\U0001F3F4" + "".join(chr(0xE0000 + ord(ch)) for ch in code.lower()) + "\U000E007F"
 
-def short_leg_name(leg): leg = str(leg) leg = leg.replace(” To Win”, ”
-Win”) leg = leg.replace(“Over 2.5 Goals”, “Over 2.5”) leg =
-leg.replace(“Under 2.5 Goals”, “Under 2.5”) leg = leg.replace(“BTTS
-Yes”, “BTTS”) leg = leg.replace(“BTTS No”, “BTTS No”) return leg
 
-def flagged_leg_name(name): text = str(name or ““) # Add flags to simple
-market names without changing Over/Under/BTTS-only legs. for team, flag
-in sorted(WORLD_CUP_TEAM_FLAGS.items(), key=lambda item: len(item[0]),
-reverse=True): if text == team: return f”{flag} {text}” if
-text.startswith(team + ” Win”): return text.replace(team, f”{flag}
-{team}“, 1) if text.startswith(team +” “): return text.replace(team,
-f”{flag} {team}“, 1) return text
+ENGLAND_FLAG = subdivision_flag("gbeng")
+SCOTLAND_FLAG = subdivision_flag("gbsct")
+WALES_FLAG = subdivision_flag("gbwls")
 
-def compact_legs(legs): return ” + “.join(short_leg_name(leg) for leg in
-legs)
 
-def setup_status(score): if score >= get_score_threshold(): return “✅
-POST” return “❌ BELOW THRESHOLD”
+WORLD_CUP_TEAM_FLAGS = {
+    "Mexico": "🇲🇽",
+    "South Africa": "🇿🇦",
+    "South Korea": "🇰🇷",
+    "Czechia": "🇨🇿",
+    "Canada": "🇨🇦",
+    "Bosnia and Herzegovina": "🇧🇦",
+    "Bosnia": "🇧🇦",
+    "Qatar": "🇶🇦",
+    "Switzerland": "🇨🇭",
+    "United States": "🇺🇸",
+    "USA": "🇺🇸",
+    "Paraguay": "🇵🇾",
+    "Australia": "🇦🇺",
+    "Turkey": "🇹🇷",
+    "Brazil": "🇧🇷",
+    "Morocco": "🇲🇦",
+    "Haiti": "🇭🇹",
+    "Scotland": SCOTLAND_FLAG,
+    "Germany": "🇩🇪",
+    "Curacao": "🇨🇼",
+    "Curaçao": "🇨🇼",
+    "Ivory Coast": "🇨🇮",
+    "Cote d'Ivoire": "🇨🇮",
+    "Ecuador": "🇪🇨",
+    "Netherlands": "🇳🇱",
+    "Japan": "🇯🇵",
+    "Sweden": "🇸🇪",
+    "Tunisia": "🇹🇳",
+    "Spain": "🇪🇸",
+    "Cape Verde": "🇨🇻",
+    "Saudi Arabia": "🇸🇦",
+    "Uruguay": "🇺🇾",
+    "Belgium": "🇧🇪",
+    "Egypt": "🇪🇬",
+    "Iran": "🇮🇷",
+    "New Zealand": "🇳🇿",
+    "France": "🇫🇷",
+    "Senegal": "🇸🇳",
+    "Iraq": "🇮🇶",
+    "Norway": "🇳🇴",
+    "Argentina": "🇦🇷",
+    "Algeria": "🇩🇿",
+    "Austria": "🇦🇹",
+    "Jordan": "🇯🇴",
+    "Portugal": "🇵🇹",
+    "DR Congo": "🇨🇩",
+    "Congo DR": "🇨🇩",
+    "Uzbekistan": "🇺🇿",
+    "Colombia": "🇨🇴",
+    "England": ENGLAND_FLAG,
+    "Wales": WALES_FLAG,
+    "Croatia": "🇭🇷",
+    "Ghana": "🇬🇭",
+    "Panama": "🇵🇦",
+}
 
-def get_score_threshold(): return
-int(globals().get(“CURRENT_MIN_FOOTBALL_SCORE”, MIN_FOOTBALL_SCORE))
 
-def set_score_threshold(value): global CURRENT_MIN_FOOTBALL_SCORE
+def team_flag(team_name):
+    name = str(team_name or "").strip()
+    return WORLD_CUP_TEAM_FLAGS.get(name, "⚽")
+
+
+def team_display(team_name):
+    name = str(team_name or "").strip()
+    return f"{team_flag(name)} {name}" if name else "⚽ Team"
+
+
+def fixture_display(home, away):
+    return f"{team_display(home)} vs {team_display(away)}"
+
+
+def quality_label(score):
+    if score >= 90:
+        return "ELITE"
+    if score >= 80:
+        return "STRONG"
+    if score >= 70:
+        return "GOOD"
+    if score >= 60:
+        return "WATCHLIST"
+    return "LOW EDGE"
+
+
+def clean_api_error(error_text):
+    text = str(error_text)
+    if "apiKey=" in text:
+        text = text.split("apiKey=")[0] + "apiKey=HIDDEN"
+    if "422 Client Error" in text:
+        return "market not supported"
+    if "429 Client Error" in text:
+        return "API credit/rate limit hit"
+    if "401 Client Error" in text:
+        return "API key issue"
+    return text[:160]
+
+def short_leg_name(leg):
+    leg = str(leg)
+    leg = leg.replace(" To Win", " Win")
+    leg = leg.replace("Over 2.5 Goals", "Over 2.5")
+    leg = leg.replace("Under 2.5 Goals", "Under 2.5")
+    leg = leg.replace("BTTS Yes", "BTTS")
+    leg = leg.replace("BTTS No", "BTTS No")
+    return leg
+
+
+
+def flagged_leg_name(name):
+    text = str(name or "")
+    # Add flags to simple market names without changing Over/Under/BTTS-only legs.
+    for team, flag in sorted(WORLD_CUP_TEAM_FLAGS.items(), key=lambda item: len(item[0]), reverse=True):
+        if text == team:
+            return f"{flag} {text}"
+        if text.startswith(team + " Win"):
+            return text.replace(team, f"{flag} {team}", 1)
+        if text.startswith(team + " "):
+            return text.replace(team, f"{flag} {team}", 1)
+    return text
+
+def compact_legs(legs):
+    return " + ".join(short_leg_name(leg) for leg in legs)
+
+
+def setup_status(score):
+    if score >= get_score_threshold():
+        return "✅ POST"
+    return "❌ BELOW THRESHOLD"
+
+
+
+def get_score_threshold():
+    return int(globals().get("CURRENT_MIN_FOOTBALL_SCORE", MIN_FOOTBALL_SCORE))
+
+
+def set_score_threshold(value):
+    global CURRENT_MIN_FOOTBALL_SCORE
 
     try:
         value = int(str(value).strip())
@@ -425,8 +603,9 @@ def set_score_threshold(value): global CURRENT_MIN_FOOTBALL_SCORE
     CURRENT_MIN_FOOTBALL_SCORE = value
     return True, f"Minimum football score set to {value}."
 
-def build_score_message(args_text=““): args_text = str(args_text
-or”“).strip()
+
+def build_score_message(args_text=""):
+    args_text = str(args_text or "").strip()
 
     if not args_text:
         return (
@@ -450,43 +629,14 @@ or”“).strip()
 
     return f"⚠️ <b>SCORE NOT UPDATED</b>\n\n{msg}"
 
-=========================
 
-Odds API helpers
+# =========================
+# Odds API helpers
+# =========================
 
-=========================
-
-def cache_key_for_odds(target_date=None, sport_keys=None): date_value =
-target_date or now_utc().date() try: date_text = date_value.isoformat()
-except Exception: date_text = str(date_value) keys = “,”.join(sport_keys
-or FOOTBALL_SPORT_KEYS) return
-f”football|{date_text}|{keys}|{ODDS_REGION}”
-
-def load_cache(): data = read_json_file(CACHE_FILE, {“odds”: {}}) if
-“read_json_file” in globals() else {} if not isinstance(data, dict):
-data = {“odds”: {}} data.setdefault(“odds”, {}) return data
-
-def save_cache(data): if “write_json_file” in globals():
-write_json_file(CACHE_FILE, data)
-
-def get_cached_odds(target_date=None, sport_keys=None,
-max_age_minutes=360): data = load_cache() item = data.get(“odds”,
-{}).get(cache_key_for_odds(target_date, sport_keys)) if not item: return
-None try: cached_at = datetime.fromisoformat(item.get(“cached_at”)) if
-cached_at.tzinfo is None: cached_at =
-cached_at.replace(tzinfo=timezone.utc) age = (now_utc() -
-cached_at).total_seconds() / 60 if age > max_age_minutes: return None
-except Exception: return None return item.get(“events”, []),
-item.get(“errors”, [])
-
-def set_cached_odds(target_date=None, sport_keys=None, events=None,
-errors=None): data = load_cache() data.setdefault(“odds”,
-{})[cache_key_for_odds(target_date, sport_keys)] = { “cached_at”:
-now_utc().isoformat(), “events”: events or [], “errors”: errors or [], }
-save_cache(data)
-
-def odds_api_get(path, params=None): if not ODDS_API_KEY: raise
-ValueError(“Missing THE_ODDS_API_KEY in Render environment variables.”)
+def odds_api_get(path, params=None):
+    if not ODDS_API_KEY:
+        raise ValueError("Missing THE_ODDS_API_KEY in Render environment variables.")
 
     url = f"https://api.the-odds-api.com/v4{path}"
     final_params = params.copy() if params else {}
@@ -501,9 +651,13 @@ ValueError(“Missing THE_ODDS_API_KEY in Render environment variables.”)
     response.raise_for_status()
     return response.json()
 
-def get_active_sports(): return odds_api_get(“/sports”, params={}) or []
 
-def get_available_soccer_sports(): soccer = []
+def get_active_sports():
+    return odds_api_get("/sports", params={}) or []
+
+
+def get_available_soccer_sports():
+    soccer = []
 
     try:
         sports = get_active_sports()
@@ -524,19 +678,15 @@ def get_available_soccer_sports(): soccer = []
 
     return soccer
 
-def fetch_football_odds(target_date=None, sport_keys=None,
-force_refresh=False): sport_keys = sport_keys or FOOTBALL_SPORT_KEYS
-cached = None if force_refresh else get_cached_odds(target_date,
-sport_keys) if cached is not None: return cached
 
+def fetch_football_odds(target_date=None, sport_keys=None):
     all_events_by_id = {}
     errors = []
 
     # Pull markets separately. If totals or BTTS fails, h2h still works.
     market_attempts = ["h2h", "totals", "btts"]
-    selected_date = target_date or now_utc().date()
 
-    for sport_key in sport_keys:
+    for sport_key in (sport_keys or FOOTBALL_SPORT_KEYS):
         for market_name in market_attempts:
             try:
                 data = odds_api_get(
@@ -553,6 +703,7 @@ sport_keys) if cached is not None: return cached
                     continue
 
                 for event in data:
+                    selected_date = target_date or now_utc().date()
                     if not event_is_on_date(event, selected_date):
                         continue
 
@@ -569,18 +720,66 @@ sport_keys) if cached is not None: return cached
                 if market_name == "h2h" or "API" in cleaned or "limit" in cleaned:
                     errors.append(f"{sport_key}/{market_name}: {cleaned}")
 
-    events = list(all_events_by_id.values())
-    set_cached_odds(target_date, sport_keys, events, errors)
+    return list(all_events_by_id.values()), errors
+
+
+def football_cache_key(target_date=None, sport_keys=None):
+    date_label = scan_date_label(target_date or now_utc().date())
+    keys = ",".join(sport_keys or FOOTBALL_SPORT_KEYS)
+    return f"{date_label}|{keys}"
+
+
+def save_football_cache(target_date, sport_keys, events, errors=None):
+    cache = load_cache_state()
+    key = football_cache_key(target_date, sport_keys)
+    cache.setdefault("football", {})[key] = {
+        "saved_at": now_utc().isoformat(),
+        "target_date": scan_date_label(target_date or now_utc().date()),
+        "sport_keys": sport_keys or FOOTBALL_SPORT_KEYS,
+        "events": events or [],
+        "errors": errors or [],
+    }
+    save_cache_state(cache)
+
+
+def read_football_cache(target_date=None, sport_keys=None, max_age_hours=18):
+    cache = load_cache_state()
+    key = football_cache_key(target_date, sport_keys)
+    record = cache.get("football", {}).get(key)
+    if not record:
+        return None, ["cache empty"]
+    try:
+        saved_at = datetime.fromisoformat(str(record.get("saved_at")).replace("Z", "+00:00"))
+        if saved_at.tzinfo is None:
+            saved_at = saved_at.replace(tzinfo=timezone.utc)
+        age_hours = (now_utc() - saved_at.astimezone(timezone.utc)).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            return None, ["cache expired"]
+    except Exception:
+        return None, ["cache timestamp invalid"]
+    return record.get("events", []), record.get("errors", [])
+
+
+def refresh_football_cache(target_date=None, sport_keys=None):
+    events, errors = fetch_football_odds(target_date, sport_keys)
+    save_football_cache(target_date, sport_keys or FOOTBALL_SPORT_KEYS, events, errors)
     return events, errors
 
-=========================
 
-Market extraction
+def cached_or_refresh_football_odds(target_date=None, sport_keys=None):
+    events, errors = read_football_cache(target_date, sport_keys)
+    if events is not None:
+        return events, errors
+    return refresh_football_cache(target_date, sport_keys)
 
-=========================
 
-def get_best_market_prices(event): home = event.get(“home_team”, ““)
-away = event.get(”away_team”, ““)
+# =========================
+# Market extraction
+# =========================
+
+def get_best_market_prices(event):
+    home = event.get("home_team", "")
+    away = event.get("away_team", "")
 
     prices = {
         "home": None,
@@ -640,8 +839,10 @@ away = event.get(”away_team”, ““)
 
     return prices
 
-def choose_favourite(prices): home = prices.get(“home”) away =
-prices.get(“away”)
+
+def choose_favourite(prices):
+    home = prices.get("home")
+    away = prices.get("away")
 
     if not home or not away:
         return None
@@ -661,14 +862,14 @@ prices.get(“away”)
         "side": "away",
     }
 
-=========================
 
-Scoring engine
+# =========================
+# Scoring engine
+# =========================
 
-=========================
-
-def score_football_event(event): prices = get_best_market_prices(event)
-favourite = choose_favourite(prices)
+def score_football_event(event):
+    prices = get_best_market_prices(event)
+    favourite = choose_favourite(prices)
 
     if not favourite:
         return None
@@ -787,25 +988,30 @@ favourite = choose_favourite(prices)
         "warnings": warnings,
     }
 
-=========================
 
-Premium formatting helpers
 
-=========================
 
-def black_book_footer(): return “━━━━━━━━━━━━━━📚 THE BLACK BOOKSVR
-Selection Engine”
+# =========================
+# Premium formatting helpers
+# =========================
 
-def compact_score_line(fixture_score, combo_score=None): if combo_score
-is None: return f”🔥 Fixture Score: {fixture_score}/100”
+def black_book_footer():
+    return "━━━━━━━━━━━━━━\n📚 <b>THE BLACK BOOK</b>\n<i>SVR Selection Engine</i>"
+
+
+
+def compact_score_line(fixture_score, combo_score=None):
+    if combo_score is None:
+        return f"🔥 Fixture Score: <b>{fixture_score}/100</b>"
 
     return (
         f"🔥 Fixture Score: <b>{fixture_score}/100</b>\n"
         f"🧠 Combo Score: <b>{combo_score}/100</b>"
     )
 
-def premium_combo_card(label, combo, stake=None): if not combo: return
-“”
+def premium_combo_card(label, combo, stake=None):
+    if not combo:
+        return ""
 
     if stake is None:
         return (
@@ -820,10 +1026,14 @@ def premium_combo_card(label, combo, stake=None): if not combo: return
         f"{format_odds(combo['odds'])} | {money(stake)} → {money(float(stake) * float(combo['odds']))}"
     )
 
-def daily_header(title, target_date=None, league_key=None,
-fixtures=None, qualified=None, min_score=None): lines = [ “📚 THE BLACK
-BOOK”, title, ““, f”📅 Date: {scan_date_label(target_date or
-now_utc().date())}“, ]
+
+def daily_header(title, target_date=None, league_key=None, fixtures=None, qualified=None, min_score=None):
+    lines = [
+        "📚 <b>THE BLACK BOOK</b>",
+        title,
+        "",
+        f"📅 Date: <b>{scan_date_label(target_date or now_utc().date())}</b>",
+    ]
 
     if league_key is not None:
         lines.append(f"🏆 League: <b>{league_display_name(league_key)}</b>")
@@ -839,17 +1049,23 @@ now_utc().date())}“, ]
 
     return "\n".join(lines)
 
-def resolve_topic_id(topic_id): if topic_id is None: return None try:
-return int(str(topic_id).strip()) except Exception: return None
 
-=========================
+def resolve_topic_id(topic_id):
+    if topic_id is None:
+        return None
+    try:
+        return int(str(topic_id).strip())
+    except Exception:
+        return None
 
-Assessment engine
 
-=========================
+# =========================
+# Assessment engine
+# =========================
 
-def make_leg(name, odds, leg_type, confidence, bookmaker=None,
-tags=None): if odds is None: return None
+def make_leg(name, odds, leg_type, confidence, bookmaker=None, tags=None):
+    if odds is None:
+        return None
 
     try:
         odds = float(odds)
@@ -868,8 +1084,10 @@ tags=None): if odds is None: return None
         "tags": tags or [],
     }
 
-def build_candidate_legs(scored): prices = scored[“prices”] fav =
-scored[“favourite”]
+
+def build_candidate_legs(scored):
+    prices = scored["prices"]
+    fav = scored["favourite"]
 
     legs = []
 
@@ -985,8 +1203,11 @@ scored[“favourite”]
 
     return legs
 
-def combo_has_conflict(legs): names = {leg[“name”] for leg in legs}
-result_types = {“winner”, “draw”, “outsider”}
+
+
+def combo_has_conflict(legs):
+    names = {leg["name"] for leg in legs}
+    result_types = {"winner", "draw", "outsider"}
 
     if "Over 2.5 Goals" in names and "Under 2.5 Goals" in names:
         return True
@@ -997,8 +1218,10 @@ result_types = {“winner”, “draw”, “outsider”}
 
     return False
 
-def combo_correlation_score(legs): names = {leg[“name”] for leg in legs}
-types = {leg[“type”] for leg in legs}
+
+def combo_correlation_score(legs):
+    names = {leg["name"] for leg in legs}
+    types = {leg["type"] for leg in legs}
 
     score = 50
 
@@ -1017,11 +1240,25 @@ types = {leg[“type”] for leg in legs}
 
     return max(0, min(score, 100))
 
-def combo_value_score(odds): if odds < 1.30: return 10 if odds < 1.60:
-return 38 if odds < 2.10: return 64 if odds < 3.50: return 88 if odds <
-5.50: return 78 if odds < 8.50: return 58 return 32
 
-def combo_risk_penalty(legs, odds): penalty = 0
+def combo_value_score(odds):
+    if odds < 1.30:
+        return 10
+    if odds < 1.60:
+        return 38
+    if odds < 2.10:
+        return 64
+    if odds < 3.50:
+        return 88
+    if odds < 5.50:
+        return 78
+    if odds < 8.50:
+        return 58
+    return 32
+
+
+def combo_risk_penalty(legs, odds):
+    penalty = 0
 
     if len(legs) == 2:
         penalty += 4
@@ -1037,8 +1274,10 @@ def combo_risk_penalty(legs, odds): penalty = 0
 
     return penalty
 
-def assess_combo(legs): if not legs or combo_has_conflict(legs): return
-None
+
+def assess_combo(legs):
+    if not legs or combo_has_conflict(legs):
+        return None
 
     odds = 1.0
     for leg in legs:
@@ -1085,9 +1324,11 @@ None
         "type_count": len(legs),
     }
 
-def generate_candidate_combos(scored): legs =
-build_candidate_legs(scored) combos = [] max_legs = max(1,
-min(MAX_COMBO_LEGS, 3))
+
+def generate_candidate_combos(scored):
+    legs = build_candidate_legs(scored)
+    combos = []
+    max_legs = max(1, min(MAX_COMBO_LEGS, 3))
 
     for size in range(1, max_legs + 1):
         for parts in itertools.combinations(legs, size):
@@ -1105,9 +1346,11 @@ min(MAX_COMBO_LEGS, 3))
     combos.sort(key=lambda item: (item["score"], item["odds"]), reverse=True)
     return combos
 
-def select_best_setup(scored): combos =
-generate_candidate_combos(scored) fav = scored[“favourite”] fav_name =
-f”{fav[‘team’]} To Win”
+
+def select_best_setup(scored):
+    combos = generate_candidate_combos(scored)
+    fav = scored["favourite"]
+    fav_name = f"{fav['team']} To Win"
 
     singles = [c for c in combos if c["type_count"] == 1]
     doubles = [c for c in combos if c["type_count"] == 2]
@@ -1168,7 +1411,9 @@ f”{fav[‘team’]} To Win”
         "best_combo_score": best_combo_score,
     }
 
-def fixture_assessment_score(scored, setup): score = scored[“score”]
+
+def fixture_assessment_score(scored, setup):
+    score = scored["score"]
 
     value = setup.get("value")
     risky = setup.get("risky")
@@ -1189,13 +1434,19 @@ def fixture_assessment_score(scored, setup): score = scored[“score”]
 
     return max(0, min(100, score))
 
-def build_combo_section(label, combo, stake): if not combo: return “”
+
+
+def build_combo_section(label, combo, stake):
+    if not combo:
+        return ""
 
     return premium_combo_card(label, combo, stake=stake)
 
-def build_football_setup_message(scored): event = scored[“event”] setup
-= select_best_setup(scored) assessed_score =
-fixture_assessment_score(scored, setup)
+
+def build_football_setup_message(scored):
+    event = scored["event"]
+    setup = select_best_setup(scored)
+    assessed_score = fixture_assessment_score(scored, setup)
 
     home = event.get("home_team", "Home")
     away = event.get("away_team", "Away")
@@ -1237,14 +1488,14 @@ fixture_assessment_score(scored, setup)
 
     return "\n".join(lines)
 
-=========================
 
-Scanner runner
+# =========================
+# Scanner runner
+# =========================
 
-=========================
-
-def scan_football(target_date=None, sport_keys=None): events, errors =
-fetch_football_odds(target_date, sport_keys) scored_events = []
+def scan_football(target_date=None, sport_keys=None):
+    events, errors = fetch_football_odds(target_date, sport_keys)
+    scored_events = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1272,9 +1523,9 @@ fetch_football_odds(target_date, sport_keys) scored_events = []
 
     return scored_events[:MAX_FOOTBALL_POSTS], errors, len(events)
 
-def run_football_scan(post_to_topic=True, target_date=None,
-sport_keys=None, league_key=None): setups, errors, scanned_count =
-scan_football(target_date, sport_keys)
+
+def run_football_scan(post_to_topic=True, target_date=None, sport_keys=None, league_key=None):
+    setups, errors, scanned_count = scan_football(target_date, sport_keys)
 
     posts_sent = 0
     send_errors = []
@@ -1315,9 +1566,10 @@ scan_football(target_date, sport_keys)
         "summary": summary,
     }
 
-def scan_all_football_scores(limit=10, target_date=None,
-sport_keys=None): events, errors = fetch_football_odds(target_date,
-sport_keys) scored_events = []
+
+def scan_all_football_scores(limit=10, target_date=None, sport_keys=None):
+    events, errors = fetch_football_odds(target_date, sport_keys)
+    scored_events = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1327,10 +1579,9 @@ sport_keys) scored_events = []
     scored_events.sort(key=lambda item: item.get("assessment_score", item["score"]), reverse=True)
     return scored_events[:limit], errors, len(events)
 
-def build_showallfootball_message(limit=10, target_date=None,
-sport_keys=None, league_key=None): scored_events, errors, scanned_count
-= scan_all_football_scores(limit=limit, target_date=target_date,
-sport_keys=sport_keys)
+
+def build_showallfootball_message(limit=10, target_date=None, sport_keys=None, league_key=None):
+    scored_events, errors, scanned_count = scan_all_football_scores(limit=limit, target_date=target_date, sport_keys=sport_keys)
 
     lines = [
         "⚽ <b>THE BLACK BOOK FOOTBALL SCORES</b>",
@@ -1368,8 +1619,10 @@ sport_keys=sport_keys)
 
     return "\n".join(lines)
 
+
 def clone_combo_with_names(base_combo, leg_names, odds, score_adjust=0):
-if not base_combo: return None
+    if not base_combo:
+        return None
 
     return {
         "legs": base_combo.get("legs", []),
@@ -1379,8 +1632,12 @@ if not base_combo: return None
         "type_count": len(leg_names),
     }
 
-def build_acca_combo_variants(row): setup = row.get(“setup”, {}) safe =
-setup.get(“safe”) value = setup.get(“value”) risky = setup.get(“risky”)
+
+def build_acca_combo_variants(row):
+    setup = row.get("setup", {})
+    safe = setup.get("safe")
+    value = setup.get("value")
+    risky = setup.get("risky")
 
     safe_acca = safe
     value_acca = None
@@ -1419,10 +1676,13 @@ setup.get(“safe”) value = setup.get(“value”) risky = setup.get(“risky�
         "risky_acca": risky_acca,
     }
 
-def acca_line(row, combo_type): event = row[“event”] combo =
-row[combo_type] home = event.get(“home_team”, “Home”) away =
-event.get(“away_team”, “Away”) kickoff =
-kickoff_text(event.get(“commence_time”))
+
+def acca_line(row, combo_type):
+    event = row["event"]
+    combo = row[combo_type]
+    home = event.get("home_team", "Home")
+    away = event.get("away_team", "Away")
+    kickoff = kickoff_text(event.get("commence_time"))
 
     return (
         f"<b>{fixture_display(home, away)}</b>\n"
@@ -1431,12 +1691,19 @@ kickoff_text(event.get(“commence_time”))
         f"{format_odds(combo['odds'])} | Score <b>{row['assessment_score']}/100</b>"
     )
 
-def total_acca_odds(rows, combo_type): odds = 1.0 for row in rows: combo
-= row.get(combo_type) if not combo: return 0 odds *=
-float(combo[“odds”]) return round(odds, 2)
 
-def choose_acca_rows(rows, combo_type, min_odds, max_odds): from
-itertools import combinations
+def total_acca_odds(rows, combo_type):
+    odds = 1.0
+    for row in rows:
+        combo = row.get(combo_type)
+        if not combo:
+            return 0
+        odds *= float(combo["odds"])
+    return round(odds, 2)
+
+
+def choose_acca_rows(rows, combo_type, min_odds, max_odds):
+    from itertools import combinations
 
     available = [row for row in rows if row.get(combo_type)]
     available.sort(key=lambda row: (row["assessment_score"], row[combo_type]["score"]), reverse=True)
@@ -1463,9 +1730,9 @@ itertools import combinations
 
     return best
 
-def build_acca_section(title, rows, combo_type, stake, min_odds,
-max_odds): selected = choose_acca_rows(rows, combo_type, min_odds,
-max_odds)
+
+def build_acca_section(title, rows, combo_type, stake, min_odds, max_odds):
+    selected = choose_acca_rows(rows, combo_type, min_odds, max_odds)
 
     if len(selected) < 2:
         return (
@@ -1503,9 +1770,10 @@ max_odds)
 
     return "\n".join(lines)
 
-def build_daily_acca_message(target_date=None, sport_keys=None,
-league_key=None): events, errors = fetch_football_odds(target_date,
-sport_keys) rows = []
+
+def build_daily_acca_message(target_date=None, sport_keys=None, league_key=None):
+    events, errors = cached_or_refresh_football_odds(target_date, sport_keys)
+    rows = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1574,9 +1842,11 @@ sport_keys) rows = []
 
     return "\n".join(lines)
 
-def build_previewfootball_message(limit=5, target_date=None,
-sport_keys=None, league_key=None): events, errors =
-fetch_football_odds(target_date, sport_keys) rows = []
+
+
+def build_previewfootball_message(limit=5, target_date=None, sport_keys=None, league_key=None):
+    events, errors = fetch_football_odds(target_date, sport_keys)
+    rows = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1630,24 +1900,33 @@ fetch_football_odds(target_date, sport_keys) rows = []
 
     return "\n".join(lines)
 
-def build_settings_message(): return ( “⚙️ THE BLACK BOOK SETTINGS”
-f”Post score: {get_score_threshold()}” f”Max football posts:
-{MAX_FOOTBALL_POSTS}” f”Daily acca min score: {DAILY_ACCA_MIN_SCORE}”
-f”Daily acca max legs: {DAILY_ACCA_MAX_LEGS}” f”Football SVR Topic:
-{FOOTBALL_SVR_TOPIC_ID}” f”Football Accas Topic:
-{FOOTBALL_ACCAS_TOPIC_ID}” f”Football Results Topic:
-{FOOTBALL_RESULTS_TOPIC_ID}” )
 
-=========================
+def build_settings_message():
+    return (
+        "⚙️ <b>THE BLACK BOOK SETTINGS</b>\n\n"
+        f"Post score: <b>{get_score_threshold()}</b>\n"
+        f"Max football posts: <b>{MAX_FOOTBALL_POSTS}</b>\n"
+        f"Daily acca min score: <b>{DAILY_ACCA_MIN_SCORE}</b>\n"
+        f"Daily acca max legs: <b>{DAILY_ACCA_MAX_LEGS}</b>\n\n"
+        f"Football SVR Topic: <b>{FOOTBALL_SVR_TOPIC_ID}</b>\n"
+        f"Football Accas Topic: <b>{FOOTBALL_ACCAS_TOPIC_ID}</b>\n"
+        f"Football Results Topic: <b>{FOOTBALL_RESULTS_TOPIC_ID}</b>\n"
+    )
 
-v3.8 Smarter BOT PICK + service updates
 
-=========================
 
-def combo_fragility_penalty(combo): if not combo: return 0 names =
-combo.get(“leg_names”, []) joined = ” + “.join(names) odds =
-float(combo.get(”odds”, 1) or 1) score = int(combo.get(“score”, 50) or
-50) penalty = 0
+# =========================
+# v3.8 Smarter BOT PICK + service updates
+# =========================
+
+def combo_fragility_penalty(combo):
+    if not combo:
+        return 0
+    names = combo.get("leg_names", [])
+    joined = " + ".join(names)
+    odds = float(combo.get("odds", 1) or 1)
+    score = int(combo.get("score", 50) or 50)
+    penalty = 0
 
     if len(names) >= 2:
         penalty += 8 * (len(names) - 1)
@@ -1664,7 +1943,9 @@ float(combo.get(”odds”, 1) or 1) score = int(combo.get(“score”, 50) or
 
     return max(0, min(100, score - penalty))
 
-def choose_bot_pick(setup): candidates = []
+
+def choose_bot_pick(setup):
+    candidates = []
 
     if setup.get("safe"):
         safe = setup["safe"]
@@ -1714,18 +1995,30 @@ def choose_bot_pick(setup): candidates = []
     candidates.sort(key=lambda x: x["reliability"], reverse=True)
     return candidates[0]
 
-def bot_pick_line(setup): pick = choose_bot_pick(setup) if not pick:
-return “🎯 BOT PICK: None” return ( f”🎯 BOT PICK: {pick[‘label’]}”
-f”{compact_legs(pick[‘combo’][‘leg_names’])}” f”{pick[‘reason’]}” )
 
-def london_today(): return
-now_utc().astimezone(ZoneInfo(“Europe/London”)).date()
+def bot_pick_line(setup):
+    pick = choose_bot_pick(setup)
+    if not pick:
+        return "🎯 <b>BOT PICK:</b> None"
+    return (
+        f"🎯 <b>BOT PICK:</b> {pick['label']}\n"
+        f"{compact_legs(pick['combo']['leg_names'])}\n"
+        f"<i>{pick['reason']}</i>"
+    )
 
-def london_tomorrow(): return london_today() + timedelta(days=1)
 
-def build_tomorrow_preview_message(): target_date = london_tomorrow()
-events, errors = fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS)
-rows = []
+def london_today():
+    return now_utc().astimezone(ZoneInfo("Europe/London")).date()
+
+
+def london_tomorrow():
+    return london_today() + timedelta(days=1)
+
+
+def build_tomorrow_preview_message():
+    target_date = london_tomorrow()
+    events, errors = cached_or_refresh_football_odds(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1774,9 +2067,11 @@ rows = []
     lines.extend(["━━━━━━━━━━━━━━", "Full accas posted in ⚽ Football Accas.", "📚 The Black Book", "Find The Edge."])
     return "\n".join(lines)
 
-def build_matchday_update_message(): target_date = london_today()
-events, errors = fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS)
-rows = []
+
+def build_matchday_update_message():
+    target_date = london_today()
+    events, errors = cached_or_refresh_football_odds(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1823,76 +2118,120 @@ rows = []
     lines.extend(["━━━━━━━━━━━━━━", "📚 The Black Book", "Find The Edge."])
     return "\n".join(lines)
 
-def build_final_call_message(event, setup, assessed_score): home =
-event.get(“home_team”, “Home”) away = event.get(“away_team”, “Away”)
-pick = choose_bot_pick(setup) lines = [ “🚨 FINAL CALL”, ““,”📚 THE
-BLACK BOOK“,”“, f”{fixture_display(home, away)}“, f”⏰ Kick Off:
-{kickoff_text(event.get(‘commence_time’))}“,”“,”━━━━━━━━━━━━━━“,”“,”🎯
-BEST BET“, ] if pick: lines += [ f”{pick[‘label’]}“,
-compact_legs(pick[”combo”][”leg_names”]),
-format_odds(pick[”combo”][”odds”]),”“, f”🔥 Fixture Score:
-{assessed_score}/100“, f”🧠 Combo Score: {pick[‘combo’].get(‘score’,
-0)}/100“, f”{pick[‘reason’]}“, ] else: lines.append(“No official bet
-available.”) lines += [““,”━━━━━━━━━━━━━━“,”🍀 Good luck to everyone
-following.”, ““,”📚 The Black Book”, “Find The Edge.”] return
-“”.join(lines)
 
-def build_bets_closed_message(event, setup): home =
-event.get(“home_team”, “Home”) away = event.get(“away_team”, “Away”)
-pick = choose_bot_pick(setup) lines = [ “🔒 BETS CLOSED”, ““,”📚 THE
-BLACK BOOK“,”“, f”{fixture_display(home, away)}“, f”Kick Off:
-{kickoff_text(event.get(‘commence_time’))}“,”“,”All official selections
-are now locked.”, ““, ] if pick: lines += [“🎯 Official Pick”,
-pick[“label”], compact_legs(pick[“combo”][“leg_names”]), “”] lines +=
-[“Results will be posted in:”, “💰 Football Results”, ““,”📚 The Black
-Book”, “Find The Edge.”] return “”.join(lines)
+def build_final_call_message(event, setup, assessed_score):
+    home = event.get("home_team", "Home")
+    away = event.get("away_team", "Away")
+    pick = choose_bot_pick(setup)
+    lines = [
+        "🚨 <b>FINAL CALL</b>",
+        "",
+        "📚 <b>THE BLACK BOOK</b>",
+        "",
+        f"<b>{fixture_display(home, away)}</b>",
+        f"⏰ Kick Off: <b>{kickoff_text(event.get('commence_time'))}</b>",
+        "",
+        "━━━━━━━━━━━━━━",
+        "",
+        "🎯 <b>BEST BET</b>",
+    ]
+    if pick:
+        lines += [
+            f"<b>{pick['label']}</b>",
+            compact_legs(pick["combo"]["leg_names"]),
+            format_odds(pick["combo"]["odds"]),
+            "",
+            f"🔥 Fixture Score: <b>{assessed_score}/100</b>",
+            f"🧠 Combo Score: <b>{pick['combo'].get('score', 0)}/100</b>",
+            f"<i>{pick['reason']}</i>",
+        ]
+    else:
+        lines.append("No official bet available.")
+    lines += ["", "━━━━━━━━━━━━━━", "🍀 Good luck to everyone following.", "", "📚 The Black Book", "Find The Edge."]
+    return "\n".join(lines)
+
+
+def build_bets_closed_message(event, setup):
+    home = event.get("home_team", "Home")
+    away = event.get("away_team", "Away")
+    pick = choose_bot_pick(setup)
+    lines = [
+        "🔒 <b>BETS CLOSED</b>",
+        "",
+        "📚 <b>THE BLACK BOOK</b>",
+        "",
+        f"<b>{fixture_display(home, away)}</b>",
+        f"Kick Off: <b>{kickoff_text(event.get('commence_time'))}</b>",
+        "",
+        "All official selections are now locked.",
+        "",
+    ]
+    if pick:
+        lines += ["🎯 <b>Official Pick</b>", pick["label"], compact_legs(pick["combo"]["leg_names"]), ""]
+    lines += ["Results will be posted in:", "💰 Football Results", "", "📚 The Black Book", "Find The Edge."]
+    return "\n".join(lines)
+
 
 def run_tomorrow_preview():
-send_to_football_topic(build_tomorrow_preview_message())
-send_to_football_accas_topic(build_daily_acca_message(target_date=london_tomorrow(),
-sport_keys=FOOTBALL_SPORT_KEYS, league_key=“all”))
+    send_to_football_topic(build_tomorrow_preview_message())
+    send_to_football_accas_topic(build_daily_acca_message(target_date=london_tomorrow(), sport_keys=FOOTBALL_SPORT_KEYS, league_key="all"))
+
 
 def run_matchday_update():
-send_to_football_topic(build_matchday_update_message())
+    send_to_football_topic(build_matchday_update_message())
 
-=========================
 
-v3.9 Alert automation
 
-=========================
+# =========================
+# v3.9 Alert automation
+# =========================
 
-ALERT_STATE_FILE = os.environ.get(“ALERT_STATE_FILE”, ALERTS_FILE)
-FINAL_CALL_MINUTES_BEFORE =
-int(os.environ.get(“FINAL_CALL_MINUTES_BEFORE”, “30”) or 30)
-FINAL_CALL_WINDOW_MINUTES =
-int(os.environ.get(“FINAL_CALL_WINDOW_MINUTES”, “10”) or 10)
-BETS_CLOSED_WINDOW_MINUTES =
-int(os.environ.get(“BETS_CLOSED_WINDOW_MINUTES”, “10”) or 10)
+ALERT_STATE_FILE = os.environ.get("ALERT_STATE_FILE", "/tmp/black_book_alert_state.json")
+FINAL_CALL_MINUTES_BEFORE = int(os.environ.get("FINAL_CALL_MINUTES_BEFORE", "30") or 30)
+FINAL_CALL_WINDOW_MINUTES = int(os.environ.get("FINAL_CALL_WINDOW_MINUTES", "10") or 10)
+BETS_CLOSED_WINDOW_MINUTES = int(os.environ.get("BETS_CLOSED_WINDOW_MINUTES", "10") or 10)
 
-def load_alert_state(): try: path = Path(ALERT_STATE_FILE) if not
-path.exists(): return {} return
-json.loads(path.read_text(encoding=“utf-8”)) except Exception: return {}
 
-def save_alert_state(state): try: path = Path(ALERT_STATE_FILE)
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(state, indent=2, sort_keys=True),
-encoding=“utf-8”) except Exception: pass
+def load_alert_state():
+    try:
+        path = Path(ALERT_STATE_FILE)
+        if not path.exists():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
-def alert_event_key(event): home = str(event.get(“home_team”, “Home”))
-away = str(event.get(“away_team”, “Away”)) commence =
-str(event.get(“commence_time”, ““)) sport =
-str(event.get(”sport_key_used”, event.get(“sport_key”, “football”)))
-return f”{sport}|{home}|{away}|{commence}”
 
-def minutes_until_kickoff(event): kickoff =
-parse_event_datetime(event.get(“commence_time”)) if not kickoff: return
-None now_london = now_utc().astimezone(ZoneInfo(“Europe/London”))
-kickoff_london = kickoff.astimezone(ZoneInfo(“Europe/London”)) return
-(kickoff_london - now_london).total_seconds() / 60
+def save_alert_state(state):
+    try:
+        path = Path(ALERT_STATE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
 
-def build_alert_candidates(target_date=None): target_date = target_date
-or london_today() events, errors = fetch_football_odds(target_date,
-FOOTBALL_SPORT_KEYS) rows = []
+
+def alert_event_key(event):
+    home = str(event.get("home_team", "Home"))
+    away = str(event.get("away_team", "Away"))
+    commence = str(event.get("commence_time", ""))
+    sport = str(event.get("sport_key_used", event.get("sport_key", "football")))
+    return f"{sport}|{home}|{away}|{commence}"
+
+
+def minutes_until_kickoff(event):
+    kickoff = parse_event_datetime(event.get("commence_time"))
+    if not kickoff:
+        return None
+    now_london = now_utc().astimezone(ZoneInfo("Europe/London"))
+    kickoff_london = kickoff.astimezone(ZoneInfo("Europe/London"))
+    return (kickoff_london - now_london).total_seconds() / 60
+
+
+def build_alert_candidates(target_date=None):
+    target_date = target_date or london_today()
+    events, errors = fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
 
     for event in events:
         scored = score_football_event(event)
@@ -1919,8 +2258,11 @@ FOOTBALL_SPORT_KEYS) rows = []
     rows.sort(key=lambda r: r["minutes"])
     return rows, errors
 
-def run_final_call_alerts(): state = load_alert_state() sent = 0 rows,
-errors = build_alert_candidates(london_today())
+
+def run_final_call_alerts():
+    state = load_alert_state()
+    sent = 0
+    rows, errors = build_alert_candidates(london_today())
 
     for row in rows:
         mins = row["minutes"]
@@ -1945,8 +2287,11 @@ errors = build_alert_candidates(london_today())
     save_alert_state(state)
     return {"sent": sent, "checked": len(rows), "errors": errors[:4]}
 
-def run_bets_closed_alerts(): state = load_alert_state() sent = 0 rows,
-errors = build_alert_candidates(london_today())
+
+def run_bets_closed_alerts():
+    state = load_alert_state()
+    sent = 0
+    rows, errors = build_alert_candidates(london_today())
 
     for row in rows:
         mins = row["minutes"]
@@ -1969,401 +2314,627 @@ errors = build_alert_candidates(london_today())
     save_alert_state(state)
     return {"sent": sent, "checked": len(rows), "errors": errors[:4]}
 
-def run_alert_automation(): result = run_stored_fixture_alerts() return
-{ “ok”: True, “final_call”: {“sent”: result.get(“final_call_sent”, 0),
-“checked”: result.get(“checked”, 0), “errors”: []}, “bets_closed”:
-{“sent”: result.get(“bets_closed_sent”, 0), “checked”:
-result.get(“checked”, 0), “errors”: []}, }
 
-def build_alert_status_message(): store = load_fixture_store()
-final_count = len([r for r in store.get(“fixtures”, {}).values() if
-r.get(“final_call_sent”)]) closed_count = len([r for r in
-store.get(“fixtures”, {}).values() if r.get(“bets_closed_sent”)]) return
-( “🚨 THE BLACK BOOK ALERTS” f”Final Call sent: {final_count}” f”Bets
-Closed sent: {closed_count}” f”Final Call timing:
-{FINAL_CALL_MINUTES_BEFORE} mins before KO” “Alert checks use saved
-fixtures only. No extra odds scans.” )
+def run_alert_automation():
+    result = run_stored_fixture_alerts()
+    return {
+        "ok": True,
+        "final_call": {"sent": result.get("final_call_sent", 0), "checked": result.get("checked", 0), "errors": []},
+        "bets_closed": {"sent": result.get("bets_closed_sent", 0), "checked": result.get("checked", 0), "errors": []},
+    }
 
-=========================
 
-v4.0 Foundation storage, member messages and scheduler
 
-=========================
+def build_alert_status_message():
+    store = load_fixture_store()
+    final_count = len([r for r in store.get("fixtures", {}).values() if r.get("final_call_sent")])
+    closed_count = len([r for r in store.get("fixtures", {}).values() if r.get("bets_closed_sent")])
+    return (
+        "🚨 <b>THE BLACK BOOK ALERTS</b>\n\n"
+        f"Final Call sent: <b>{final_count}</b>\n"
+        f"Bets Closed sent: <b>{closed_count}</b>\n\n"
+        f"Final Call timing: <b>{FINAL_CALL_MINUTES_BEFORE} mins before KO</b>\n"
+        "Alert checks use saved fixtures only. No extra odds scans."
+    )
 
-def send_to_members_chat(text: str): return send_telegram_message(
-FOOTBALL_CHAT_ID, text, thread_id=MEMBERS_CHAT_TOPIC_ID, )
 
-def read_json_file(path, default): try: p = Path(path) if not
-p.exists(): return default return
-json.loads(p.read_text(encoding=“utf-8”)) except Exception: return
-default
 
-def write_json_file(path, data): try: p = Path(path)
-p.parent.mkdir(parents=True, exist_ok=True)
-p.write_text(json.dumps(data, indent=2, sort_keys=True),
-encoding=“utf-8”) except Exception: pass
 
-def load_fixture_store(): data = read_json_file(FIXTURE_STORE_FILE,
-{“fixtures”: {}}) if “fixtures” not in data: data[“fixtures”] = {}
-return data
+# =========================
+# v4.0 Foundation storage, member messages and scheduler
+# =========================
 
-def save_fixture_store(store): write_json_file(FIXTURE_STORE_FILE,
-store)
+def send_to_members_chat(text: str):
+    return send_telegram_message(
+        FOOTBALL_CHAT_ID,
+        text,
+        thread_id=MEMBERS_CHAT_TOPIC_ID,
+    )
 
-def load_scheduler_state(): data = read_json_file(SCHEDULER_STATE_FILE,
-{}) return data if isinstance(data, dict) else {}
 
-def save_scheduler_state(state): write_json_file(SCHEDULER_STATE_FILE,
-state)
+def read_json_file(path, default):
+    try:
+        p = Path(path)
+        if not p.exists():
+            return default
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return default
 
-def version_label(): return VERSION
 
-def fixture_store_key(event): home = str(event.get(“home_team”, “Home”))
-away = str(event.get(“away_team”, “Away”)) commence =
-str(event.get(“commence_time”, ““)) sport =
-str(event.get(”sport_key_used”, event.get(“sport_key”, “football”)))
-return f”{sport}|{home}|{away}|{commence}”
+def write_json_file(path, data):
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
 
-def serialise_combo(combo): if not combo: return None return
-{“leg_names”: combo.get(“leg_names”, []), “odds”: combo.get(“odds”),
-“score”: combo.get(“score”, 0)}
 
-def serialise_pick(pick): if not pick: return None return {“key”:
-pick.get(“key”), “label”: pick.get(“label”), “combo”:
-serialise_combo(pick.get(“combo”)), “reason”: pick.get(“reason”),
-“reliability”: pick.get(“reliability”)}
+def load_members_state():
+    data = read_json_file(MEMBERS_FILE, {"welcomed": {}})
+    if not isinstance(data, dict):
+        data = {"welcomed": {}}
+    data.setdefault("welcomed", {})
+    return data
 
-def record_combo_to_combo(combo): if not combo: return None return
-{“leg_names”: combo.get(“leg_names”, []), “odds”: combo.get(“odds”),
-“score”: combo.get(“score”, 0)}
 
-def record_to_event(record): return {“sport_key”:
-record.get(“sport_key”, “football”), “sport_key_used”:
-record.get(“sport_key”, “football”), “home_team”:
-record.get(“home_team”, “Home”), “away_team”: record.get(“away_team”,
-“Away”), “commence_time”: record.get(“commence_time”)}
+def save_members_state(state):
+    write_json_file(MEMBERS_FILE, state)
 
-def record_to_setup(record): return { “safe”:
-record_combo_to_combo(record.get(“safe”)), “value”:
-record_combo_to_combo(record.get(“value”)), “risky”:
-record_combo_to_combo(record.get(“risky”)), “best_combo_score”: max([
-int((record.get(“safe”) or {}).get(“score”, 0) or 0),
-int((record.get(“value”) or {}).get(“score”, 0) or 0),
-int((record.get(“risky”) or {}).get(“score”, 0) or 0), ]), }
 
-def store_qualifying_fixture(event, setup, assessed_score,
-source=“scan”): store = load_fixture_store() key =
-fixture_store_key(event) existing = store[“fixtures”].get(key, {}) pick
-= choose_bot_pick(setup) store[“fixtures”][key] = { **existing, “key”:
-key, “source”: source, “sport_key”: event.get(“sport_key_used”,
-event.get(“sport_key”, “football”)), “home_team”: event.get(“home_team”,
-“Home”), “away_team”: event.get(“away_team”, “Away”), “commence_time”:
-event.get(“commence_time”), “assessment_score”: int(assessed_score or
-0), “safe”: serialise_combo(setup.get(“safe”)), “value”:
-serialise_combo(setup.get(“value”)), “risky”:
-serialise_combo(setup.get(“risky”)), “bot_pick”: serialise_pick(pick),
-“updated_at”: now_utc().isoformat(), “preview_sent”:
-existing.get(“preview_sent”, False), “final_call_sent”:
-existing.get(“final_call_sent”, False), “bets_closed_sent”:
-existing.get(“bets_closed_sent”, False), } save_fixture_store(store)
-return store[“fixtures”][key]
+def load_stats_state():
+    data = read_json_file(STATS_FILE, {"results": [], "summary": {}})
+    return data if isinstance(data, dict) else {"results": [], "summary": {}}
 
-def build_and_store_fixtures(target_date, source=“scan”): events, errors
-= fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS) rows = [] for
-event in events: scored = score_football_event(event) if not scored:
-continue setup = select_best_setup(scored) assessed_score =
-fixture_assessment_score(scored, setup) if assessed_score <
-get_score_threshold(): continue record = store_qualifying_fixture(event,
-setup, assessed_score, source=source) rows.append({“event”: event,
-“setup”: setup, “score”: assessed_score, “record”: record, “pick”:
-choose_bot_pick(setup)}) rows.sort(key=lambda r: r[“score”],
-reverse=True) return rows, events, errors
 
-def build_tomorrow_preview_message_stored(): target_date =
-london_tomorrow() rows, events, errors =
-build_and_store_fixtures(target_date, source=“tomorrow_preview”) lines =
-[“📚 THE BLACK BOOK”, “🌙 TOMORROW’S PREVIEW”, ““, f”📅 Date:
-{scan_date_label(target_date)}“, f”Fixtures checked: {len(events)}“,
-f”Official picks: {len(rows)}“,””] if not rows: lines.append(“No
-qualifying official picks found for tomorrow yet.”) else: for index, row
-in enumerate(rows[:5], start=1): event = row[“event”] pick =
-row.get(“pick”) pick_text = “No official pick” if pick: pick_text =
-f”{pick[‘label’]} — {compact_legs(pick[‘combo’][‘leg_names’])}”
-lines.append(f”{index}. {fixture_display(event.get(‘home_team’),
-event.get(‘away_team’))}🔥 Score: {row[‘score’]}/100🏆 Official Pick:
-{pick_text}“) if errors: lines.append(”API notes:“) for err in
-errors[:4]: lines.append(f”• {err}“) lines.extend([”━━━━━━━━━━━━━━”,
-”Accas are posted in ⚽ Football Accas.”, ”Alerts are now scheduled from
-saved fixtures.”, ”📚 The Black Book”, ”Find The Edge.”])
-return”“.join(lines), rows
+def save_stats_state(state):
+    write_json_file(STATS_FILE, state)
 
-def run_tomorrow_preview_stable(): message, rows =
-build_tomorrow_preview_message_stored() send_to_football_topic(message)
-acca_msg = build_daily_acca_message(target_date=london_tomorrow(),
-sport_keys=FOOTBALL_SPORT_KEYS, league_key=“all”)
-send_to_football_accas_topic(acca_msg) store = load_fixture_store() for
-row in rows: key = row[“record”][“key”] if key in store[“fixtures”]:
-store[“fixtures”][key][“preview_sent”] = True
-store[“fixtures”][key][“preview_sent_at”] = now_utc().isoformat()
-save_fixture_store(store) return {“ok”: True, “task”:
-“tomorrow_preview”, “saved”: len(rows)}
 
-def run_matchday_update_stable(): rows, events, errors =
-build_and_store_fixtures(london_today(), source=“matchday_update”)
-send_to_football_topic(build_matchday_update_message()) return {“ok”:
-True, “task”: “matchday_update”, “saved”: len(rows), “fixtures_checked”:
-len(events), “errors”: errors[:4]}
+def load_cache_state():
+    data = read_json_file(CACHE_FILE, {"football": {}})
+    if not isinstance(data, dict):
+        data = {"football": {}}
+    data.setdefault("football", {})
+    return data
 
-def minutes_until_record_kickoff(record): kickoff =
-parse_event_datetime(record.get(“commence_time”)) if not kickoff: return
-None now_london = now_utc().astimezone(ZoneInfo(“Europe/London”))
-kickoff_london = kickoff.astimezone(ZoneInfo(“Europe/London”)) return
-(kickoff_london - now_london).total_seconds() / 60
 
-def run_stored_fixture_alerts(): store = load_fixture_store() sent_final
-= 0 sent_closed = 0 checked = 0 for key, record in
-list(store.get(“fixtures”, {}).items()): mins =
-minutes_until_record_kickoff(record) if mins is None or mins < -180:
-continue checked += 1 event = record_to_event(record) setup =
-record_to_setup(record) score = int(record.get(“assessment_score”, 0) or
-0) final_lower = FINAL_CALL_MINUTES_BEFORE - FINAL_CALL_WINDOW_MINUTES
-final_upper = FINAL_CALL_MINUTES_BEFORE + FINAL_CALL_WINDOW_MINUTES if
-not record.get(“final_call_sent”) and final_lower <= mins <=
-final_upper: send_to_football_topic(build_final_call_message(event,
-setup, score)) record[“final_call_sent”] = True
-record[“final_call_sent_at”] = now_utc().isoformat() sent_final += 1 if
-not record.get(“bets_closed_sent”) and -BETS_CLOSED_WINDOW_MINUTES <=
-mins <= BETS_CLOSED_WINDOW_MINUTES:
-send_to_football_topic(build_bets_closed_message(event, setup))
-record[“bets_closed_sent”] = True record[“bets_closed_sent_at”] =
-now_utc().isoformat() sent_closed += 1 store[“fixtures”][key] = record
-save_fixture_store(store) return {“ok”: True, “task”: “stored_alerts”,
-“checked”: checked, “final_call_sent”: sent_final, “bets_closed_sent”:
-sent_closed}
+def save_cache_state(state):
+    write_json_file(CACHE_FILE, state)
 
-def build_fixture_store_status_message(): store = load_fixture_store()
-fixtures = list(store.get(“fixtures”, {}).values()) active = [] for
-record in fixtures: mins = minutes_until_record_kickoff(record) if mins
-is not None and mins > -180: active.append((mins, record))
-active.sort(key=lambda item: item[0]) lines = [“📦 THE BLACK BOOK
-FIXTURE STORE”, ““, f”Saved fixtures: {len(fixtures)}“, f”Active
-fixtures: {len(active)}“,””] for mins, record in active[:8]: status = []
-status.append(“Final ✅” if record.get(“final_call_sent”) else “Final
-❌”) status.append(“Closed ✅” if record.get(“bets_closed_sent”) else
-“Closed ❌”) lines.append(f”{fixture_display(record.get(‘home_team’),
-record.get(‘away_team’))}in: {int(mins)} mins“) if not active:
-lines.append(”No active stored fixtures.”) return “”.join(lines)
 
-def build_morning_message(): store = load_fixture_store() today =
-london_today() active_today = [] for record in store.get(“fixtures”,
-{}).values(): kickoff =
-parse_event_datetime(record.get(“commence_time”)) if kickoff and
-kickoff.astimezone(ZoneInfo(“Europe/London”)).date() == today:
-active_today.append(record) active_today.sort(key=lambda r:
-parse_event_datetime(r.get(“commence_time”)) or now_utc()) safe = sum(1
-for r in active_today if (r.get(“bot_pick”) or {}).get(“key”) == “safe”)
-value = sum(1 for r in active_today if (r.get(“bot_pick”) or
-{}).get(“key”) == “value”) risky = sum(1 for r in active_today if
-(r.get(“bot_pick”) or {}).get(“key”) == “risky”) lines = [“☀️ GOOD
-MORNING”, ““,”📚 THE BLACK BOOK“,”“,”Today’s card is ready to follow.”,
-““, f”⚽ Official Picks: {len(active_today)}“, f”🟢 Safe: {safe}“, f”🟡
-Value: {value}“, f”🔴 Risky: {risky}”] if active_today: top =
-sorted(active_today, key=lambda r: int(r.get(“assessment_score”, 0) or
-0), reverse=True)[0] pick = top.get(“bot_pick”) or {} combo =
-pick.get(“combo”) or {} lines.extend([““,”🔥 Highest Rated“,
-f”{fixture_display(top.get(‘home_team’), top.get(‘away_team’))}“,
-f”{pick.get(‘label’, ‘Official Pick’)}“,
-f”{compact_legs(combo.get(‘leg_names’, []))}“, f”Score:
-{top.get(‘assessment_score’, 0)}/100”]) lines.extend([““,”Official picks
-are in ⚽ Football SVR.”, “Accas are in ⚽ Football Accas.”, ““,”📚 The
-Black Book”, “Find The Edge.”]) return “”.join(lines)
+def is_admin_user(user_id):
+    if not ADMIN_USER_IDS:
+        return True
+    return str(user_id or "").strip() in ADMIN_USER_IDS
 
-def run_morning_message(): send_to_members_chat(build_morning_message())
-return {“ok”: True, “task”: “morning_message”}
 
-def build_member_welcome_message(member_name=“new member”): name =
-str(member_name or “new member”).strip() return ( “👋 WELCOME TO THE
-BLACK BOOK” f”Welcome {name}. Good to have you in.” “📚 This is a
-premium betting research group built around structure, discipline and
-value.” “⚽ Where to look” “• Football SVR — official picks and final
-calls” “• Football Accas — Safe, Value and Risky accas” “• Football
-Results — settled bets and summaries” “• Members Chat — updates and
-community chat” “Find The Edge.” )
+def admin_only_message():
+    return (
+        "🔒 <b>ADMIN ONLY</b>\n\n"
+        "This command is restricted to The Black Book admins."
+    )
 
-def load_members_store(): data = read_json_file(MEMBERS_FILE,
-{“welcomed”: {}}) if not isinstance(data, dict): data = {“welcomed”: {}}
-data.setdefault(“welcomed”, {}) return data
 
-def save_members_store(data): write_json_file(MEMBERS_FILE, data)
+def latest_changes_text():
+    return "\n".join(f"• {change}" for change in LATEST_CHANGES)
 
-def handle_new_members(update): message = (update or {}).get(“message”)
-or {} new_members = message.get(“new_chat_members”) or [] if not
-new_members: return None
 
-    store = load_members_store()
-    sent = 0
-    for member in new_members:
-        user_id = str(member.get("id") or "").strip()
-        if user_id and store["welcomed"].get(user_id):
+def load_fixture_store():
+    data = read_json_file(FIXTURE_STORE_FILE, {"fixtures": {}})
+    if "fixtures" not in data:
+        data["fixtures"] = {}
+    return data
+
+
+def save_fixture_store(store):
+    write_json_file(FIXTURE_STORE_FILE, store)
+
+
+def load_scheduler_state():
+    data = read_json_file(SCHEDULER_STATE_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def save_scheduler_state(state):
+    write_json_file(SCHEDULER_STATE_FILE, state)
+
+
+def version_label():
+    return VERSION
+
+
+def fixture_store_key(event):
+    home = str(event.get("home_team", "Home"))
+    away = str(event.get("away_team", "Away"))
+    commence = str(event.get("commence_time", ""))
+    sport = str(event.get("sport_key_used", event.get("sport_key", "football")))
+    return f"{sport}|{home}|{away}|{commence}"
+
+
+def serialise_combo(combo):
+    if not combo:
+        return None
+    return {"leg_names": combo.get("leg_names", []), "odds": combo.get("odds"), "score": combo.get("score", 0)}
+
+
+def serialise_pick(pick):
+    if not pick:
+        return None
+    return {"key": pick.get("key"), "label": pick.get("label"), "combo": serialise_combo(pick.get("combo")), "reason": pick.get("reason"), "reliability": pick.get("reliability")}
+
+
+def record_combo_to_combo(combo):
+    if not combo:
+        return None
+    return {"leg_names": combo.get("leg_names", []), "odds": combo.get("odds"), "score": combo.get("score", 0)}
+
+
+def record_to_event(record):
+    return {"sport_key": record.get("sport_key", "football"), "sport_key_used": record.get("sport_key", "football"), "home_team": record.get("home_team", "Home"), "away_team": record.get("away_team", "Away"), "commence_time": record.get("commence_time")}
+
+
+def record_to_setup(record):
+    return {
+        "safe": record_combo_to_combo(record.get("safe")),
+        "value": record_combo_to_combo(record.get("value")),
+        "risky": record_combo_to_combo(record.get("risky")),
+        "best_combo_score": max([
+            int((record.get("safe") or {}).get("score", 0) or 0),
+            int((record.get("value") or {}).get("score", 0) or 0),
+            int((record.get("risky") or {}).get("score", 0) or 0),
+        ]),
+    }
+
+
+def store_qualifying_fixture(event, setup, assessed_score, source="scan"):
+    store = load_fixture_store()
+    key = fixture_store_key(event)
+    existing = store["fixtures"].get(key, {})
+    pick = choose_bot_pick(setup)
+    store["fixtures"][key] = {
+        **existing,
+        "key": key,
+        "source": source,
+        "sport_key": event.get("sport_key_used", event.get("sport_key", "football")),
+        "home_team": event.get("home_team", "Home"),
+        "away_team": event.get("away_team", "Away"),
+        "commence_time": event.get("commence_time"),
+        "assessment_score": int(assessed_score or 0),
+        "safe": serialise_combo(setup.get("safe")),
+        "value": serialise_combo(setup.get("value")),
+        "risky": serialise_combo(setup.get("risky")),
+        "bot_pick": serialise_pick(pick),
+        "updated_at": now_utc().isoformat(),
+        "preview_sent": existing.get("preview_sent", False),
+        "final_call_sent": existing.get("final_call_sent", False),
+        "bets_closed_sent": existing.get("bets_closed_sent", False),
+    }
+    save_fixture_store(store)
+    return store["fixtures"][key]
+
+
+def build_and_store_fixtures(target_date, source="scan"):
+    events, errors = refresh_football_cache(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
             continue
+        setup = select_best_setup(scored)
+        assessed_score = fixture_assessment_score(scored, setup)
+        if assessed_score < get_score_threshold():
+            continue
+        record = store_qualifying_fixture(event, setup, assessed_score, source=source)
+        rows.append({"event": event, "setup": setup, "score": assessed_score, "record": record, "pick": choose_bot_pick(setup)})
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    return rows, events, errors
+
+
+def build_tomorrow_preview_message_stored():
+    target_date = london_tomorrow()
+    rows, events, errors = build_and_store_fixtures(target_date, source="tomorrow_preview")
+    lines = ["📚 <b>THE BLACK BOOK</b>", "🌙 <b>TOMORROW'S PREVIEW</b>", "", f"📅 Date: <b>{scan_date_label(target_date)}</b>", f"Fixtures checked: <b>{len(events)}</b>", f"Official picks: <b>{len(rows)}</b>", ""]
+    if not rows:
+        lines.append("No qualifying official picks found for tomorrow yet.")
+    else:
+        for index, row in enumerate(rows[:5], start=1):
+            event = row["event"]
+            pick = row.get("pick")
+            pick_text = "No official pick"
+            if pick:
+                pick_text = f"{pick['label']} — {compact_legs(pick['combo']['leg_names'])}"
+            lines.append(f"<b>{index}. {fixture_display(event.get('home_team'), event.get('away_team'))}</b>\n🔥 Score: <b>{row['score']}/100</b>\n🏆 Official Pick: {pick_text}\n")
+    if errors:
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
+    lines.extend(["━━━━━━━━━━━━━━", "Accas are posted in ⚽ Football Accas.", "Alerts are now scheduled from saved fixtures.", "📚 The Black Book", "Find The Edge."])
+    return "\n".join(lines), rows
+
+
+def run_tomorrow_preview_stable():
+    message, rows = build_tomorrow_preview_message_stored()
+    send_to_football_topic(message)
+    acca_msg = build_daily_acca_message(target_date=london_tomorrow(), sport_keys=FOOTBALL_SPORT_KEYS, league_key="all")
+    send_to_football_accas_topic(acca_msg)
+    store = load_fixture_store()
+    for row in rows:
+        key = row["record"]["key"]
+        if key in store["fixtures"]:
+            store["fixtures"][key]["preview_sent"] = True
+            store["fixtures"][key]["preview_sent_at"] = now_utc().isoformat()
+    save_fixture_store(store)
+    return {"ok": True, "task": "tomorrow_preview", "saved": len(rows)}
+
+
+def run_matchday_update_stable():
+    rows, events, errors = build_and_store_fixtures(london_today(), source="matchday_update")
+    send_to_football_topic(build_matchday_update_message())
+    return {"ok": True, "task": "matchday_update", "saved": len(rows), "fixtures_checked": len(events), "errors": errors[:4]}
+
+
+def minutes_until_record_kickoff(record):
+    kickoff = parse_event_datetime(record.get("commence_time"))
+    if not kickoff:
+        return None
+    now_london = now_utc().astimezone(ZoneInfo("Europe/London"))
+    kickoff_london = kickoff.astimezone(ZoneInfo("Europe/London"))
+    return (kickoff_london - now_london).total_seconds() / 60
+
+
+def run_stored_fixture_alerts():
+    store = load_fixture_store()
+    sent_final = 0
+    sent_closed = 0
+    checked = 0
+    for key, record in list(store.get("fixtures", {}).items()):
+        mins = minutes_until_record_kickoff(record)
+        if mins is None or mins < -180:
+            continue
+        checked += 1
+        event = record_to_event(record)
+        setup = record_to_setup(record)
+        score = int(record.get("assessment_score", 0) or 0)
+        final_lower = FINAL_CALL_MINUTES_BEFORE - FINAL_CALL_WINDOW_MINUTES
+        final_upper = FINAL_CALL_MINUTES_BEFORE + FINAL_CALL_WINDOW_MINUTES
+        if not record.get("final_call_sent") and final_lower <= mins <= final_upper:
+            send_to_football_topic(build_final_call_message(event, setup, score))
+            record["final_call_sent"] = True
+            record["final_call_sent_at"] = now_utc().isoformat()
+            sent_final += 1
+        if not record.get("bets_closed_sent") and -BETS_CLOSED_WINDOW_MINUTES <= mins <= BETS_CLOSED_WINDOW_MINUTES:
+            send_to_football_topic(build_bets_closed_message(event, setup))
+            record["bets_closed_sent"] = True
+            record["bets_closed_sent_at"] = now_utc().isoformat()
+            sent_closed += 1
+        store["fixtures"][key] = record
+    save_fixture_store(store)
+    return {"ok": True, "task": "stored_alerts", "checked": checked, "final_call_sent": sent_final, "bets_closed_sent": sent_closed}
+
+
+def build_fixture_store_status_message():
+    store = load_fixture_store()
+    fixtures = list(store.get("fixtures", {}).values())
+    active = []
+    for record in fixtures:
+        mins = minutes_until_record_kickoff(record)
+        if mins is not None and mins > -180:
+            active.append((mins, record))
+    active.sort(key=lambda item: item[0])
+    lines = ["📦 <b>THE BLACK BOOK FIXTURE STORE</b>", "", f"Saved fixtures: <b>{len(fixtures)}</b>", f"Active fixtures: <b>{len(active)}</b>", ""]
+    for mins, record in active[:8]:
+        status = []
+        status.append("Final ✅" if record.get("final_call_sent") else "Final ❌")
+        status.append("Closed ✅" if record.get("bets_closed_sent") else "Closed ❌")
+        lines.append(f"<b>{fixture_display(record.get('home_team'), record.get('away_team'))}</b>\nKO in: <b>{int(mins)} mins</b>\n{' | '.join(status)}\n")
+    if not active:
+        lines.append("No active stored fixtures.")
+    return "\n".join(lines)
+
+
+def build_morning_message():
+    store = load_fixture_store()
+    today = london_today()
+    active_today = []
+    for record in store.get("fixtures", {}).values():
+        kickoff = parse_event_datetime(record.get("commence_time"))
+        if kickoff and kickoff.astimezone(ZoneInfo("Europe/London")).date() == today:
+            active_today.append(record)
+    active_today.sort(key=lambda r: parse_event_datetime(r.get("commence_time")) or now_utc())
+    safe = sum(1 for r in active_today if (r.get("bot_pick") or {}).get("key") == "safe")
+    value = sum(1 for r in active_today if (r.get("bot_pick") or {}).get("key") == "value")
+    risky = sum(1 for r in active_today if (r.get("bot_pick") or {}).get("key") == "risky")
+    lines = ["☀️ <b>GOOD MORNING</b>", "", "📚 <b>THE BLACK BOOK</b>", "", "Today’s card is ready to follow.", "", f"⚽ Official Picks: <b>{len(active_today)}</b>", f"🟢 Safe: <b>{safe}</b>", f"🟡 Value: <b>{value}</b>", f"🔴 Risky: <b>{risky}</b>"]
+    if active_today:
+        top = sorted(active_today, key=lambda r: int(r.get("assessment_score", 0) or 0), reverse=True)[0]
+        pick = top.get("bot_pick") or {}
+        combo = pick.get("combo") or {}
+        lines.extend(["", "🔥 <b>Highest Rated</b>", f"{fixture_display(top.get('home_team'), top.get('away_team'))}", f"{pick.get('label', 'Official Pick')}", f"{compact_legs(combo.get('leg_names', []))}", f"Score: <b>{top.get('assessment_score', 0)}/100</b>"])
+    lines.extend(["", "Official picks are in ⚽ Football SVR.", "Accas are in ⚽ Football Accas.", "", "📚 The Black Book", "Find The Edge."])
+    return "\n".join(lines)
+
+
+def run_morning_message():
+    send_to_members_chat(build_morning_message())
+    return {"ok": True, "task": "morning_message"}
+
+
+def build_member_welcome_message(member_name="new member"):
+    safe_name = str(member_name or "new member").strip()
+    return (f"👋 <b>Welcome {safe_name}</b>\n\n" "You’re now inside <b>The Black Book</b>.\n\n" "Start here:\n\n" "⚽ <b>Football SVR</b> - Official football picks.\n" "⚽ <b>Football Accas</b> - Daily accas.\n" "💰 <b>Football Results</b> - Results and record.\n" "💬 <b>Members chat</b> - Talk through the bets.\n\n" "📚 The Black Book\n" "Find The Edge.")
+
+
+def handle_new_members(update):
+    message = update.get("message") or {}
+    new_members = message.get("new_chat_members") or []
+    if not new_members:
+        return None
+
+    members_state = load_members_state()
+    welcomed = members_state.setdefault("welcomed", {})
+    sent = 0
+
+    for member in new_members:
+        if member.get("is_bot"):
+            continue
+
+        member_id = str(member.get("id") or member.get("username") or "").strip()
+        if member_id and welcomed.get(member_id):
+            continue
+
         name = member.get("first_name") or member.get("username") or "new member"
         send_to_members_chat(build_member_welcome_message(name))
-        if user_id:
-            store["welcomed"][user_id] = {"name": name, "welcomed_at": now_utc().isoformat()}
+
+        if member_id:
+            welcomed[member_id] = {
+                "name": name,
+                "welcomed_at": now_utc().isoformat(),
+            }
         sent += 1
-    save_members_store(store)
+
+    save_members_state(members_state)
     return {"ok": True, "new_members_welcomed": sent}
 
-def build_storage_status_message(): store = load_fixture_store() cache =
-load_cache() members = read_json_file(MEMBERS_FILE, {“welcomed”: {}})
-return ( “💾 THE BLACK BOOK STORAGE” f”Saved fixtures:
-{len(store.get(‘fixtures’, {}))}” f”Cached odds sets:
-{len(cache.get(‘odds’, {}))}” f”Welcomed members:
-{len(members.get(‘welcomed’, {}))}” f”Current version:
-{version_label()}” “📁 Local JSON files” f”• fixtures.json:
-{FIXTURE_STORE_FILE}” f”• members.json: {MEMBERS_FILE}” f”• stats.json:
-{STATS_FILE}” f”• alerts.json: {ALERTS_FILE}” f”• version.json:
-{VERSION_FILE}” f”• cache.json: {CACHE_FILE}” “📌 Current setup”
-f”{LOCAL_DATA_NOTICE}” )
 
-def build_version_update_message(): return (“📢 THE BLACK BOOK UPDATE”
-“The group has been upgraded to make the service clearer and easier to
-follow.” “✅ What members will notice” “• Automatic 07:30 morning
-messages” “• Tomorrow previews and accas are saved for alerts” “• Final
-Call and Bets Closed alerts use saved fixtures” “• The 5-minute alert
-check does not use extra odds scans” “• New members are welcomed in
-Members chat” “📌 Data note” f”{LOCAL_DATA_NOTICE}” f”📚
-{version_label()}” “Find The Edge.”)
+def build_storage_status_message():
+    store = load_fixture_store()
+    members = load_members_state()
+    stats = load_stats_state()
+    cache = load_cache_state()
+    return (
+        "💾 <b>THE BLACK BOOK STORAGE</b>\n\n"
+        f"fixtures.json: <b>{len(store.get('fixtures', {}))} saved fixtures</b>\n"
+        f"members.json: <b>{len(members.get('welcomed', {}))} welcomed members</b>\n"
+        f"stats.json: <b>{len(stats.get('results', [])) if isinstance(stats.get('results', []), list) else 0} results</b>\n"
+        f"alerts.json: <b>{Path(ALERTS_FILE).name}</b>\n"
+        f"version.json: <b>{VERSION}</b>\n"
+        f"cache.json: <b>{len(cache.get('football', {}))} cache groups</b>\n\n"
+        "📌 <b>Current setup</b>\n"
+        f"{LOCAL_DATA_NOTICE}\n\n"
+        "Permanent Render disk storage can be added later so these JSON files persist through updates."
+    )
 
-def send_version_update_once(force=False): state =
-read_json_file(RELEASE_NOTES_FILE, {}) if not force and
-state.get(“last_version_update”) == VERSION: return {“ok”: True, “sent”:
-False, “reason”: “already_sent”, “version”: VERSION}
-send_to_members_chat(build_version_update_message())
-state[“last_version_update”] = VERSION state[“last_version_update_at”] =
-now_utc().isoformat() write_json_file(RELEASE_NOTES_FILE, state) return
-{“ok”: True, “sent”: True, “version”: VERSION}
 
-def safe_run_task(task_name, func): try: return func() except Exception
-as exc: return {“ok”: False, “task”: task_name, “error”: str(exc)}
+def build_version_update_message():
+    return (
+        "📢 <b>THE BLACK BOOK UPDATE</b>\n\n"
+        f"<b>{VERSION}</b> is now live.\n\n"
+        "✅ <b>Latest Changes</b>\n"
+        f"{latest_changes_text()}\n\n"
+        "📌 <b>Data note</b>\n"
+        f"{LOCAL_DATA_NOTICE}\n\n"
+        "📚 The Black Book\n"
+        "Find The Edge."
+    )
 
-def scheduler_due_once(state, key): if state.get(key): return False
-state[key] = now_utc().isoformat() save_scheduler_state(state) return
-True
+def send_version_update_once(force=False):
+    state = read_json_file(RELEASE_NOTES_FILE, {})
+    if not force and state.get("last_version_update") == VERSION:
+        return {"ok": True, "sent": False, "reason": "already_sent", "version": VERSION}
+    send_to_members_chat(build_version_update_message())
+    state["last_version_update"] = VERSION
+    state["last_version_update_at"] = now_utc().isoformat()
+    write_json_file(RELEASE_NOTES_FILE, state)
+    return {"ok": True, "sent": True, "version": VERSION}
 
-def run_internal_scheduler_loop(): while True: try: if not
-AUTO_SCHEDULER_ENABLED: time.sleep(60) continue uk_now =
-now_utc().astimezone(ZoneInfo(“Europe/London”)) date_key =
-uk_now.strftime(“%Y-%m-%d”) state = load_scheduler_state() alert_key =
-f”alerts|{uk_now.strftime(‘%Y-%m-%d %H:%M’)}” if uk_now.minute % 5 == 0
-and scheduler_due_once(state, alert_key): safe_run_task(“alerts”,
-run_stored_fixture_alerts) if uk_now.hour == MORNING_UPDATE_HOUR and
-uk_now.minute == MORNING_UPDATE_MINUTE: if scheduler_due_once(state,
-f”morning|{date_key}“): safe_run_task(”morning”, run_morning_message) if
-uk_now.hour == MATCHDAY_UPDATE_HOUR and uk_now.minute ==
-MATCHDAY_UPDATE_MINUTE: if scheduler_due_once(state,
-f”matchday_update|{date_key}“): safe_run_task(”matchday_update”,
-run_matchday_update_stable) if uk_now.hour == TOMORROW_PREVIEW_HOUR and
-uk_now.minute == TOMORROW_PREVIEW_MINUTE: if scheduler_due_once(state,
-f”tomorrow_preview|{date_key}“): safe_run_task(”tomorrow_preview”,
-run_tomorrow_preview_stable) except Exception: pass time.sleep(60)
+
+def safe_run_task(task_name, func):
+    try:
+        return func()
+    except Exception as exc:
+        return {"ok": False, "task": task_name, "error": str(exc)}
+
+
+def scheduler_due_once(state, key):
+    if state.get(key):
+        return False
+    state[key] = now_utc().isoformat()
+    save_scheduler_state(state)
+    return True
+
+
+def run_internal_scheduler_loop():
+    while True:
+        try:
+            if not AUTO_SCHEDULER_ENABLED:
+                time.sleep(60)
+                continue
+            uk_now = now_utc().astimezone(ZoneInfo("Europe/London"))
+            date_key = uk_now.strftime("%Y-%m-%d")
+            state = load_scheduler_state()
+            alert_key = f"alerts|{uk_now.strftime('%Y-%m-%d %H:%M')}"
+            if uk_now.minute % 5 == 0 and scheduler_due_once(state, alert_key):
+                safe_run_task("alerts", run_stored_fixture_alerts)
+            if uk_now.hour == MORNING_UPDATE_HOUR and uk_now.minute == MORNING_UPDATE_MINUTE:
+                if scheduler_due_once(state, f"morning|{date_key}"):
+                    safe_run_task("morning", run_morning_message)
+            if uk_now.hour == MATCHDAY_UPDATE_HOUR and uk_now.minute == MATCHDAY_UPDATE_MINUTE:
+                if scheduler_due_once(state, f"matchday_update|{date_key}"):
+                    safe_run_task("matchday_update", run_matchday_update_stable)
+            if uk_now.hour == TOMORROW_PREVIEW_HOUR and uk_now.minute == TOMORROW_PREVIEW_MINUTE:
+                if scheduler_due_once(state, f"tomorrow_preview|{date_key}"):
+                    safe_run_task("tomorrow_preview", run_tomorrow_preview_stable)
+        except Exception:
+            pass
+        time.sleep(60)
+
 
 _scheduler_started = False
 
-def start_internal_scheduler(): global _scheduler_started if
-_scheduler_started or not AUTO_SCHEDULER_ENABLED: return
-_scheduler_started = True thread =
-threading.Thread(target=run_internal_scheduler_loop, daemon=True)
-thread.start()
+def start_internal_scheduler():
+    global _scheduler_started
+    if _scheduler_started or not AUTO_SCHEDULER_ENABLED:
+        return
+    _scheduler_started = True
+    thread = threading.Thread(target=run_internal_scheduler_loop, daemon=True)
+    thread.start()
 
-=========================
 
-Admin and routing guards
+# =========================
+# Bot messages
+# =========================
 
-=========================
+def build_start_message():
+    return (
+        "👋 <b>Welcome to The Black Book</b>\n\n"
+        "The bot is online and running the daily football service.\n\n"
+        "⚽ <b>Football SVR</b>\n"
+        "Official daily football picks.\n\n"
+        "⚽ <b>Football Accas</b>\n"
+        "Daily Safe, Value and Risky accas.\n\n"
+        "💰 <b>Football Results</b>\n"
+        "Results and track record.\n\n"
+        "💬 <b>Members chat</b>\n"
+        "Talk through the bets with everyone.\n\n"
+        "Type /help to see the command menu.\n\n"
+        "📚 The Black Book\n"
+        "Find The Edge."
+    )
 
-ADMIN_COMMANDS = { “/score”, “/settings”, “/chatid”, “/versionupdate”,
-“/storage”, “/fixturestore”, “/alertstatus”, “/alerts”, “/morning”,
-“/tomorrowpreview”, “/matchdayupdate”, “/routes”, “/marketsfootball”,
-“/footballmarkets”, “/sports”, }
 
-def is_admin_user(message): if not ADMIN_USER_IDS: # Safe default for
-existing deployments: if no admin list is configured, keep legacy
-access. return True user = message.get(“from”, {}) if
-isinstance(message, dict) else {} user_id = str(user.get(“id”,
-““)).strip() return user_id in ADMIN_USER_IDS
 
-def admin_denied_response(chat_id, thread_id=None): return
-send_telegram_message( chat_id, “🔒 Admin onlycommand is restricted to
-The Black Book admins.”, thread_id=thread_id, )
+def build_help_message():
+    return (
+        "📚 <b>THE BLACK BOOK HELP</b>\n\n"
+        "👤 <b>Members</b>\n"
+        "/start - Show welcome guide\n"
+        "/help - Show this help menu\n"
+        "/welcome - Post member guide in Members chat\n\n"
+        "⚽ <b>Football</b>\n"
+        "/scanfootball - Scan and post football SVR picks\n"
+        "/previewfootball - Preview fixtures before posting\n"
+        "/showallfootball - Show selected date fixture scores\n"
+        "/tomorrowpreview - Send tomorrow’s SVR + accas\n"
+        "/matchdayupdate - Send match day update\n"
+        "/dailyacca - Generate daily accas\n\n"
+        "🚨 <b>Alerts</b>\n"
+        "/alerts - Run saved-fixture Final Call / Bets Closed check\n"
+        "/alertstatus - View alert status\n"
+        "/fixturestore - View saved fixtures\n\n"
+        "⚙️ <b>Admin</b>\n"
+        "/score - View post score\n"
+        "/score 70 - Change post score\n"
+        "/settings - Show settings\n"
+        "/chatid - Show chat/topic ID\n"
+        "/storage - Show local storage status\n"
+        "/versionupdate - Post member update\n"
+        "/morning - Test morning message\n\n"
+        "📌 <b>Automatic Routine</b>\n"
+        "07:30 UK - Morning message\n"
+        "12:00 UK - Match day update\n"
+        "20:00 UK - Tomorrow preview + accas\n"
+        "Every 5 mins - Saved-fixture alert check\n\n"
+        "📚 <b>THE BLACK BOOK v4.0.1</b>\n"
+        "Find The Edge."
+    )
 
-def command_name(text): first = str(text or ““).split()[0].lower() if
-str(text or”“).strip() else”” return first.split(“@”, 1)[0]
 
-def is_admin_command(text): cmd = command_name(text) return any(cmd ==
-item or cmd.startswith(item) for item in ADMIN_COMMANDS)
 
-=========================
+def build_top_message():
+    return (
+        "📖 <b>THE BLACK BOOK</b>\n\n"
+        "🔥 <b>TOP DEMO SETUP</b>\n\n"
+        "Match: <b>England vs Croatia</b>\n"
+        "Setup Score: <b>84%</b>\n"
+        "Confidence: <b>HIGH</b>\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "🟢 <b>SAFE</b>\n"
+        "Stake: <b>£10</b>\n"
+        "Odds: <b>2/1</b>\n"
+        "Return: <b>£30</b>\n\n"
+        "<b>Bet:</b>\n"
+        "• Over 1.5 Goals\n"
+        "• Over 4.5 Corners\n"
+        "• England Over 0.5 Goals\n\n"
+        "Purpose: Highest probability setup.\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "🟡 <b>VALUE ⭐</b>\n"
+        "Stake: <b>£10</b>\n"
+        "Odds: <b>7/2</b>\n"
+        "Return: <b>£45</b>\n\n"
+        "<b>Bet:</b>\n"
+        "• Both Teams To Score\n"
+        "• Over 2.5 Goals\n"
+        "• Over 4.5 Corners\n\n"
+        "Purpose: Best risk/reward setup.\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "🔵 <b>COVER</b>\n"
+        "Stake: <b>£4</b>\n"
+        "Odds: <b>6/4</b>\n"
+        "Return: <b>£10</b>\n\n"
+        "<b>Bet:</b>\n"
+        "• England Over 1.5 Team Goals\n\n"
+        "Purpose: Can win with the value bet and can still cover if the value bet fails.\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "🔴 <b>RISKY ⚠️</b>\n"
+        "Stake: <b>£3</b>\n"
+        "Odds: <b>10/1</b>\n"
+        "Return: <b>£33</b>\n\n"
+        "<b>Bet:</b>\n"
+        "• England Win\n"
+        "• Kane Anytime Scorer\n"
+        "• BTTS Yes\n"
+        "• Over 2.5 Goals\n\n"
+        "⚠️ High risk / low probability / bigger return.\n\n"
+        "━━━━━━━━━━━━━━\n\n"
+        "🤖 <b>BOT PLAY</b>\n"
+        "Best Single Bet: <b>🟡 VALUE</b>\n"
+        "Best Combo: <b>🟡 VALUE + 🔵 COVER</b>\n\n"
+        "Responsible note: this is demo output only. No outcome is guaranteed."
+    )
 
-Bot messages
 
-=========================
+def build_risky_message():
+    return (
+        "📖 <b>THE BLACK BOOK</b>\n\n"
+        "🔴 <b>RISKY ⚠️ DEMO SETUP</b>\n\n"
+        "Match: <b>England vs Croatia</b>\n\n"
+        "Stake: <b>£3</b>\n"
+        "Odds: <b>10/1</b>\n"
+        "Return: <b>£33</b>\n\n"
+        "<b>Bet:</b>\n"
+        "• England Win\n"
+        "• Kane Anytime Scorer\n"
+        "• BTTS Yes\n"
+        "• Over 2.5 Goals\n\n"
+        "Risk Level: <b>HIGH</b>\n\n"
+        "⚠️ This section is for small-stake, high-return setups only."
+    )
 
-def build_version_message(): changes = “”.join([f”• {item}” for item in
-LATEST_CHANGES]) return ( f”📚 {VERSION}” f”Latest changes” “Find The
-Edge.” )
 
-def build_start_message(): return ( “👋 Welcome to The Black Book” “The
-bot is online and running the daily football service.” “⚽ Football SVR”
-“Official daily football picks.” “⚽ Football Accas” “Daily Safe, Value
-and Risky accas.” “💰 Football Results” “Results and track record.” “💬
-Members chat” “Talk through the bets with everyone.” “Type /help to see
-the command menu.” “📚 The Black Book” “Find The Edge.” )
+def build_chatid_message(chat_id, thread_id):
+    return (
+        "📖 <b>THE BLACK BOOK CHAT ID</b>\n\n"
+        f"Chat ID: <code>{chat_id}</code>\n"
+        f"Topic ID: <code>{thread_id}</code>\n\n"
+        "Use these IDs later for routing sport alerts into the correct topic."
+    )
 
-def build_help_message(): return ( “📚 THE BLACK BOOK HELP” “👤 Members”
-“/start - Show welcome guide” “/help - Show this help menu” “/welcome -
-Post member guide in Members chat” “⚽ Football” “/scanfootball - Scan
-and post football SVR picks” “/previewfootball - Preview fixtures before
-posting” “/showallfootball - Show selected date fixture scores”
-“/tomorrowpreview - Send tomorrow’s SVR + accas” “/matchdayupdate - Send
-match day update” “/dailyacca - Generate daily accas” “🚨 Alerts”
-“/alerts - Run saved-fixture Final Call / Bets Closed check”
-“/alertstatus - View alert status” “/fixturestore - View saved fixtures”
-“⚙️ Admin” “/score - View post score” “/score 70 - Change post score”
-“/settings - Show settings” “/chatid - Show chat/topic ID” “/storage -
-Show local storage status” “/versionupdate - Post member update”
-“/morning - Test morning message” “📌 Automatic Routine” “07:30 UK -
-Morning message” “12:00 UK - Match day update” “20:00 UK - Tomorrow
-preview + accas” “Every 5 mins - Saved-fixture alert check” “📚 THE
-BLACK BOOK v4.0.1” “Find The Edge.” )
 
-def build_top_message(): return ( “📖 THE BLACK BOOK” “🔥 TOP DEMO
-SETUP” “Match: England vs Croatia” “Setup Score: 84%” “Confidence: HIGH”
-“━━━━━━━━━━━━━━” “🟢 SAFE” “Stake: £10” “Odds: 2/1” “Return: £30” “Bet:”
-“• Over 1.5 Goals” “• Over 4.5 Corners” “• England Over 0.5 Goals”
-“Purpose: Highest probability setup.” “━━━━━━━━━━━━━━” “🟡 VALUE ⭐”
-“Stake: £10” “Odds: 7/2” “Return: £45” “Bet:” “• Both Teams To Score” “•
-Over 2.5 Goals” “• Over 4.5 Corners” “Purpose: Best risk/reward setup.”
-“━━━━━━━━━━━━━━” “🔵 COVER” “Stake: £4” “Odds: 6/4” “Return: £10” “Bet:”
-“• England Over 1.5 Team Goals” “Purpose: Can win with the value bet and
-can still cover if the value bet fails.” “━━━━━━━━━━━━━━” “🔴 RISKY ⚠️”
-“Stake: £3” “Odds: 10/1” “Return: £33” “Bet:” “• England Win” “• Kane
-Anytime Scorer” “• BTTS Yes” “• Over 2.5 Goals” “⚠️ High risk / low
-probability / bigger return.” “━━━━━━━━━━━━━━” “🤖 BOT PLAY” “Best
-Single Bet: 🟡 VALUE” “Best Combo: 🟡 VALUE + 🔵 COVER” “Responsible
-note: this is demo output only. No outcome is guaranteed.” )
-
-def build_risky_message(): return ( “📖 THE BLACK BOOK” “🔴 RISKY ⚠️
-DEMO SETUP” “Match: England vs Croatia” “Stake: £3” “Odds: 10/1”
-“Return: £33” “Bet:” “• England Win” “• Kane Anytime Scorer” “• BTTS
-Yes” “• Over 2.5 Goals” “Risk Level: HIGH” “⚠️ This section is for
-small-stake, high-return setups only.” )
-
-def build_chatid_message(chat_id, thread_id): return ( “📖 THE BLACK
-BOOK CHAT ID” f”Chat ID: {chat_id}” f”Topic ID: {thread_id}” “Use these
-IDs later for routing sport alerts into the correct topic.” )
-
-def build_sports_message(): soccer = get_available_soccer_sports()
+def build_sports_message():
+    soccer = get_available_soccer_sports()
 
     if not soccer:
         return (
@@ -2384,10 +2955,15 @@ def build_sports_message(): soccer = get_available_soccer_sports()
 
     return "\n".join(lines)
 
-def inspect_available_markets_for_football(): ““” Tests likely football
-market names one by one. This tells us what The Odds API actually
-returns for your key/plan/leagues. ““” supported = [] unsupported = []
-sample_details = []
+
+def inspect_available_markets_for_football():
+    """
+    Tests likely football market names one by one.
+    This tells us what The Odds API actually returns for your key/plan/leagues.
+    """
+    supported = []
+    unsupported = []
+    sample_details = []
 
     market_names = [x.strip() for x in EXTRA_MARKETS_TO_TEST.split(",") if x.strip()]
     sport_keys = FOOTBALL_SPORT_KEYS[:3]
@@ -2430,8 +3006,9 @@ sample_details = []
 
     return supported, unsupported, sample_details
 
-def build_marketsfootball_message(): supported, unsupported,
-sample_details = inspect_available_markets_for_football()
+
+def build_marketsfootball_message():
+    supported, unsupported, sample_details = inspect_available_markets_for_football()
 
     lines = [
         "🧪 <b>FOOTBALL MARKET TEST</b>",
@@ -2463,29 +3040,40 @@ sample_details = inspect_available_markets_for_football()
 
     return "\n".join(lines)
 
-=========================
 
-Flask routes
+# =========================
+# Flask routes
+# =========================
 
-=========================
+@app.route("/", methods=["GET"])
+def home():
+    return "The Black Book Bot is running", 200
 
-@app.route(“/”, methods=[“GET”]) def home(): return “The Black Book Bot
-is running”, 200
 
-@app.route(“/version”, methods=[“GET”]) def version(): return VERSION,
-200
+@app.route("/version", methods=["GET"])
+def version():
+    return VERSION, 200
 
-@app.route(“/health”, methods=[“GET”]) def health(): return jsonify({
-“ok”: True, “version”: VERSION, “utc”: now_utc().isoformat(),
-“bot_token_loaded”: bool(BOT_TOKEN), “odds_api_loaded”:
-bool(ODDS_API_KEY), “football_chat_id”: FOOTBALL_CHAT_ID,
-“football_topic_id”: FOOTBALL_TOPIC_ID, “min_football_score”:
-get_score_threshold(), “football_sport_keys”: FOOTBALL_SPORT_KEYS, }),
-200
 
-@app.route(“/set-webhook”, methods=[“GET”]) def set_webhook(): if not
-BOT_TOKEN: return jsonify({“ok”: False, “error”: “Missing
-TELEGRAM_BOT_TOKEN or BOT_TOKEN”}), 500
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "ok": True,
+        "version": VERSION,
+        "utc": now_utc().isoformat(),
+        "bot_token_loaded": bool(BOT_TOKEN),
+        "odds_api_loaded": bool(ODDS_API_KEY),
+        "football_chat_id": FOOTBALL_CHAT_ID,
+        "football_topic_id": FOOTBALL_TOPIC_ID,
+        "min_football_score": get_score_threshold(),
+        "football_sport_keys": FOOTBALL_SPORT_KEYS,
+    }), 200
+
+
+@app.route("/set-webhook", methods=["GET"])
+def set_webhook():
+    if not BOT_TOKEN:
+        return jsonify({"ok": False, "error": "Missing TELEGRAM_BOT_TOKEN or BOT_TOKEN"}), 500
 
     webhook_url = request.host_url.rstrip("/") + "/telegram-webhook"
     webhook_url = webhook_url.replace("http://", "https://", 1)
@@ -2502,9 +3090,11 @@ TELEGRAM_BOT_TOKEN or BOT_TOKEN”}), 500
         "telegram_response": response.json(),
     }), response.status_code
 
-@app.route(“/delete-webhook”, methods=[“GET”]) def delete_webhook(): if
-not BOT_TOKEN: return jsonify({“ok”: False, “error”: “Missing
-TELEGRAM_BOT_TOKEN or BOT_TOKEN”}), 500
+
+@app.route("/delete-webhook", methods=["GET"])
+def delete_webhook():
+    if not BOT_TOKEN:
+        return jsonify({"ok": False, "error": "Missing TELEGRAM_BOT_TOKEN or BOT_TOKEN"}), 500
 
     response = requests.post(api_url("deleteWebhook"), timeout=15)
 
@@ -2513,23 +3103,30 @@ TELEGRAM_BOT_TOKEN or BOT_TOKEN”}), 500
         "telegram_response": response.json(),
     }), response.status_code
 
-@app.route(“/scheduled-scan”, methods=[“GET”, “POST”]) def
-scheduled_scan(): task = request.args.get(“task”, ““).strip().lower() if
-task ==”tomorrow_preview”: return jsonify(run_tomorrow_preview_stable())
-if task == “matchday_update”: return
-jsonify(run_matchday_update_stable()) if task == “morning”: return
-jsonify(run_morning_message()) if task == “version_update”: return
-jsonify(send_version_update_once(force=False)) if task ==
-“version_update_force”: return
-jsonify(send_version_update_once(force=True)) if task in (“alerts”,
-“stored_alerts”): return jsonify(run_stored_fixture_alerts()) result =
-run_football_scan(post_to_topic=True) return jsonify({“ok”: True,
-“version”: VERSION, “scanned_count”: result[“scanned_count”],
-“qualifying_setups”: len(result[“setups”]), “posts_sent”:
-result[“posts_sent”], “errors”: result[“errors”][:5]}), 200
 
-@app.route(“/scan-football”, methods=[“GET”, “POST”]) def
-scan_football_route(): result = run_football_scan(post_to_topic=True)
+@app.route("/scheduled-scan", methods=["GET", "POST"])
+def scheduled_scan():
+    task = request.args.get("task", "").strip().lower()
+    if task == "tomorrow_preview":
+        return jsonify(run_tomorrow_preview_stable())
+    if task == "matchday_update":
+        return jsonify(run_matchday_update_stable())
+    if task == "morning":
+        return jsonify(run_morning_message())
+    if task == "version_update":
+        return jsonify(send_version_update_once(force=False))
+    if task == "version_update_force":
+        return jsonify(send_version_update_once(force=True))
+    if task in ("alerts", "stored_alerts"):
+        return jsonify(run_stored_fixture_alerts())
+    result = run_football_scan(post_to_topic=True)
+    return jsonify({"ok": True, "version": VERSION, "scanned_count": result["scanned_count"], "qualifying_setups": len(result["setups"]), "posts_sent": result["posts_sent"], "errors": result["errors"][:5]}), 200
+
+
+
+@app.route("/scan-football", methods=["GET", "POST"])
+def scan_football_route():
+    result = run_football_scan(post_to_topic=True)
 
     return jsonify({
         "ok": True,
@@ -2541,10 +3138,11 @@ scan_football_route(): result = run_football_scan(post_to_topic=True)
         "errors": result["errors"][:5],
     }), 200
 
-@app.route(“/preview-football”, methods=[“GET”, “POST”]) def
-preview_football_route(): target_date, _ =
-parse_scan_date(request.args.get(“date”, ““)) message =
-build_previewfootball_message(limit=8, target_date=target_date)
+
+@app.route("/preview-football", methods=["GET", "POST"])
+def preview_football_route():
+    target_date, _ = parse_scan_date(request.args.get("date", ""))
+    message = build_previewfootball_message(limit=8, target_date=target_date)
 
     return jsonify({
         "ok": True,
@@ -2552,10 +3150,11 @@ build_previewfootball_message(limit=8, target_date=target_date)
         "preview": message,
     }), 200
 
-@app.route(“/daily-acca”, methods=[“GET”, “POST”]) def
-daily_acca_route(): target_date, _ =
-parse_scan_date(request.args.get(“date”, ““)) message =
-build_daily_acca_message(target_date=target_date)
+
+@app.route("/daily-acca", methods=["GET", "POST"])
+def daily_acca_route():
+    target_date, _ = parse_scan_date(request.args.get("date", ""))
+    message = build_daily_acca_message(target_date=target_date)
 
     return jsonify({
         "ok": True,
@@ -2563,9 +3162,10 @@ build_daily_acca_message(target_date=target_date)
         "acca": message,
     }), 200
 
-@app.route(“/markets-football”, methods=[“GET”, “POST”]) def
-markets_football_route(): supported, unsupported, sample_details =
-inspect_available_markets_for_football()
+
+@app.route("/markets-football", methods=["GET", "POST"])
+def markets_football_route():
+    supported, unsupported, sample_details = inspect_available_markets_for_football()
 
     return jsonify({
         "ok": True,
@@ -2575,29 +3175,58 @@ inspect_available_markets_for_football()
         "samples": sample_details,
     }), 200
 
-@app.route(“/telegram-webhook”, methods=[“POST”]) def
-telegram_webhook(): try: update = request.get_json(force=True) or {}
-welcome_result = handle_new_members(update) if welcome_result is not
-None: return jsonify(welcome_result), 200 message =
-update.get(“message”) or update.get(“edited_message”) if not message:
-return jsonify({“ok”: True, “ignored”: “no_message”}), 200 text =
-str(message.get(“text”, ““)).strip() chat = message.get(”chat”, {})
-chat_id = chat.get(“id”) thread_id = message.get(“message_thread_id”) if
-not chat_id: return jsonify({“ok”: True, “ignored”: “no_chat_id”}), 200
-if is_general_chat_message(chat_id, thread_id): return jsonify({“ok”:
-True, “ignored”: “general_chat_closed”}), 200 if not
-text.startswith(“/”): return jsonify({“ok”: True, “ignored”:
-“not_a_command”}), 200 lower_text = text.lower() command =
-text.split()[0] args_text = text[len(command):].strip()
 
-        if is_admin_command(text) and not is_admin_user(message):
-            tg_response = admin_denied_response(chat_id, thread_id=thread_id)
-            return jsonify({"ok": tg_response.status_code == 200, "telegram_status": tg_response.status_code, "telegram_response": tg_response.json()}), 200
+@app.route("/telegram-webhook", methods=["POST"])
+def telegram_webhook():
+    try:
+        update = request.get_json(force=True) or {}
+        welcome_result = handle_new_members(update)
+        if welcome_result is not None:
+            return jsonify(welcome_result), 200
+        message = update.get("message") or update.get("edited_message")
+        if not message:
+            return jsonify({"ok": True, "ignored": "no_message"}), 200
+        text = str(message.get("text", "")).strip()
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+        thread_id = message.get("message_thread_id")
+        if not chat_id:
+            return jsonify({"ok": True, "ignored": "no_chat_id"}), 200
+
+        chat_type = str(chat.get("type", "")).lower()
+        from_user = message.get("from", {}) or {}
+        from_user_id = from_user.get("id")
+
+        # General chat is permanently closed in v4.0.1.
+        # In Telegram forum groups, General messages have no message_thread_id.
+        if chat_type in ("group", "supergroup") and thread_id is None:
+            return jsonify({"ok": True, "ignored": "general_chat_closed"}), 200
+
+        if not text.startswith("/"):
+            return jsonify({"ok": True, "ignored": "not_a_command"}), 200
+        lower_text = text.lower()
+        command = text.split()[0]
+        args_text = text[len(command):].strip()
+
+        admin_prefixes = ("/score", "/settings", "/chatid", "/versionupdate", "/storage", "/morning", "/routes")
+        if lower_text.startswith(admin_prefixes) and not is_admin_user(from_user_id):
+            tg_response = send_telegram_message(chat_id, admin_only_message(), thread_id=thread_id)
+            return jsonify({"ok": tg_response.status_code == 200, "telegram_status": tg_response.status_code}), 200
 
         if lower_text.startswith("/start"):
             tg_response = send_telegram_message(chat_id, build_start_message(), thread_id=thread_id)
-        elif command_name(text) == "/version":
-            tg_response = send_telegram_message(chat_id, build_version_message(), thread_id=thread_id)
+        elif lower_text.startswith("/versionupdate"):
+            result = send_version_update_once(force=False)
+            status = "sent to Members Chat" if result.get("sent") else "already sent"
+            tg_response = send_telegram_message(chat_id, f"📢 Version update {status}.", thread_id=thread_id)
+        elif lower_text.startswith("/version"):
+            reply = (
+                "📚 <b>THE BLACK BOOK</b>\n\n"
+                f"Version: <b>{VERSION}</b>\n\n"
+                "✅ <b>Latest Changes</b>\n"
+                f"{latest_changes_text()}"
+            )
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
         elif lower_text.startswith("/help"):
             tg_response = send_telegram_message(chat_id, build_help_message(), thread_id=thread_id)
         elif lower_text.startswith("/welcome"):
@@ -2606,12 +3235,6 @@ text.split()[0] args_text = text[len(command):].strip()
         elif lower_text.startswith("/morning"):
             run_morning_message()
             tg_response = send_telegram_message(chat_id, "☀️ Morning message sent.", thread_id=thread_id)
-        elif lower_text.startswith("/versionupdate"):
-            result = send_version_update_once(force=False)
-            if result.get("sent"):
-                tg_response = send_telegram_message(chat_id, "📢 Version update sent to Members Chat.", thread_id=thread_id)
-            else:
-                tg_response = send_telegram_message(chat_id, "✅ This version update has already been sent.", thread_id=thread_id)
         elif lower_text.startswith("/storage"):
             tg_response = send_telegram_message(chat_id, build_storage_status_message(), thread_id=thread_id)
         elif lower_text.startswith("/fixturestore"):
@@ -2639,15 +3262,15 @@ text.split()[0] args_text = text[len(command):].strip()
         elif lower_text.startswith("/previewtomorrow"):
             target_date, _, sport_keys, league_key = parse_scan_args("tomorrow")
             reply = build_previewfootball_message(limit=8, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_to_football_topic(reply)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
         elif lower_text.startswith("/previewfootball") or lower_text.startswith("/preview"):
             target_date, _, sport_keys, league_key = parse_scan_args(args_text)
             reply = build_previewfootball_message(limit=8, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_to_football_topic(reply)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
         elif lower_text.startswith("/showallfootball") or lower_text.startswith("/showfootball"):
             target_date, _, sport_keys, league_key = parse_scan_args(args_text)
             reply = build_showallfootball_message(limit=10, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_to_football_topic(reply)
+            tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
         elif lower_text.startswith("/scantomorrow"):
             target_date, _, sport_keys, league_key = parse_scan_args("tomorrow")
             result = run_football_scan(post_to_topic=True, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
@@ -2691,6 +3314,9 @@ text.split()[0] args_text = text[len(command):].strip()
             pass
         return jsonify({"ok": False, "error": str(e)}), 500
 
-if name == “main”: start_internal_scheduler() port =
-int(os.environ.get(“PORT”, “10000”)) app.run(host=“0.0.0.0”, port=port,
-debug=False)
+
+
+if __name__ == "__main__":
+    start_internal_scheduler()
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
