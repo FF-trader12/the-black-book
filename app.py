@@ -1,8 +1,11 @@
+from pathlib import Path
 from flask import Flask, request, jsonify
 import os
 import json
 import requests
 import itertools
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -21,7 +24,68 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.9-alert-automation"
+VERSION = "the-black-book-v0.3.10-premium-auto-routine"
+
+ADMIN_USER_IDS = {
+    x.strip()
+    for x in os.environ.get("ADMIN_USER_IDS", "").split(",")
+    if x.strip()
+}
+
+
+def is_admin_update(update):
+    # If ADMIN_USER_IDS is empty, allow current behaviour so the bot does not lock you out.
+    if not ADMIN_USER_IDS:
+        return True
+
+    try:
+        message = update.get("message") or update.get("edited_message") or {}
+        user = message.get("from") or {}
+        user_id = str(user.get("id", "")).strip()
+        return user_id in ADMIN_USER_IDS
+    except Exception:
+        return False
+
+
+def admin_only_reply(chat_id, thread_id=None):
+    return send_telegram_message(
+        chat_id,
+        "🔐 <b>Admin only.</b>\n\nThis command changes The Black Book settings.",
+        thread_id=thread_id,
+    )
+
+
+def build_help_message():
+    return (
+        "📚 <b>THE BLACK BOOK HELP</b>\n\n"
+        "⚽ <b>Football</b>\n"
+        "/scanfootball - Scan football fixtures\n"
+        "/previewfootball - Preview football fixtures\n"
+        "/tomorrowpreview - Send tomorrow's SVR + acca preview\n"
+        "/matchdayupdate - Send match day update\n"
+        "/dailyacca - Generate football accas\n\n"
+        "🚨 <b>Alerts</b>\n"
+        "/alerts - Run Final Call / Bets Closed check\n"
+        "/alertstatus - View alert automation status\n/fixturestore - View saved fixture alert status\n/storage - View storage status <i>(admin)</i>\n\n"
+        "⚙️ <b>Settings</b>\n"
+        "/score - View current post score\n"
+        "/score 60 - Change post score <i>(admin)</i>\n"
+        "/settings - Show scanner settings\n\n"
+        "📊 <b>Data / Setup</b>\n"
+        "/marketsfootball - Test available Odds API markets\n"
+        "/leagues - Show league filters\n"
+        "/sports - Show available soccer sport keys\n"
+        "/chatid - Show current chat/topic ID <i>(admin)</i>\n\n"
+        "📢 <b>Member Messages</b>\n/welcome - Post new member guide\n\n🚧 <b>Coming Soon</b>\n"
+        "• Automated Results\n"
+        "• Win/Loss Tracking\n"
+        "• Member Follow Buttons\n"
+        "• Football Specials\n\n"
+        "📚 <b>THE BLACK BOOK v3.10</b>\n"
+        "Find The Edge."
+    )
+
+
 
 # Telegram topic routing
 MAIN_CHAT_ID = os.environ.get("MAIN_CHAT_ID", "-1004368159147").strip()
@@ -33,6 +97,18 @@ FOOTBALL_TOPIC_ID = int(os.environ.get("FOOTBALL_TOPIC_ID", "13") or 13)
 # New topic layout
 FOOTBALL_SVR_TOPIC_ID = int(os.environ.get("FOOTBALL_SVR_TOPIC_ID", "235") or 235)
 FOOTBALL_ACCAS_TOPIC_ID = int(os.environ.get("FOOTBALL_ACCAS_TOPIC_ID", "238") or 238)
+# v3.10 member/routine config
+MEMBERS_CHAT_TOPIC_ID = int(os.environ.get("MEMBERS_CHAT_TOPIC_ID", "421") or 421)
+MORNING_UPDATE_HOUR = int(os.environ.get("MORNING_UPDATE_HOUR", "7") or 7)
+MORNING_UPDATE_MINUTE = int(os.environ.get("MORNING_UPDATE_MINUTE", "30") or 30)
+ENABLE_INTERNAL_SCHEDULER = os.environ.get("ENABLE_INTERNAL_SCHEDULER", "true").lower() in ("1", "true", "yes", "on")
+SCHEDULER_STATE_FILE = os.environ.get("SCHEDULER_STATE_FILE", "/tmp/black_book_scheduler_state.json")
+RELEASE_NOTES_FILE = os.environ.get("RELEASE_NOTES_FILE", "/tmp/black_book_release_notes.json")
+LOCAL_DATA_NOTICE = (
+    "Stats and alert memory are currently saved locally. "
+    "They may reset after code updates until permanent Render disk storage is added."
+)
+
 FOOTBALL_RESULTS_TOPIC_ID = int(os.environ.get("FOOTBALL_RESULTS_TOPIC_ID", "241") or 241)
 
 RACING_SVR_TOPIC_ID = int(os.environ.get("RACING_SVR_TOPIC_ID", "244") or 244)
@@ -2472,6 +2548,271 @@ def build_marketsfootball_message():
     return "\n".join(lines)
 
 
+
+# =========================
+# v3.9.3 Stable scheduler + stored fixtures
+# =========================
+
+FIXTURE_STORE_FILE = os.environ.get("FIXTURE_STORE_FILE", "/tmp/black_book_fixtures.json")
+PREVIEW_POST_LIMIT = int(os.environ.get("PREVIEW_POST_LIMIT", "5") or 5)
+
+
+def load_fixture_store():
+    try:
+        path = Path(FIXTURE_STORE_FILE)
+        if not path.exists():
+            return {"fixtures": {}}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if "fixtures" not in data:
+            data["fixtures"] = {}
+        return data
+    except Exception:
+        return {"fixtures": {}}
+
+
+def save_fixture_store(store):
+    try:
+        path = Path(FIXTURE_STORE_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(store, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def fixture_store_key(event):
+    home = str(event.get("home_team", "Home"))
+    away = str(event.get("away_team", "Away"))
+    commence = str(event.get("commence_time", ""))
+    sport = str(event.get("sport_key_used", event.get("sport_key", "football")))
+    return f"{sport}|{home}|{away}|{commence}"
+
+
+def serialise_combo(combo):
+    if not combo:
+        return None
+    return {
+        "leg_names": combo.get("leg_names", []),
+        "odds": combo.get("odds"),
+        "score": combo.get("score", 0),
+    }
+
+
+def record_combo_to_combo(combo):
+    if not combo:
+        return None
+    return {
+        "leg_names": combo.get("leg_names", []),
+        "odds": combo.get("odds"),
+        "score": combo.get("score", 0),
+    }
+
+
+def record_to_event(record):
+    return {
+        "sport_key": record.get("sport_key", "football"),
+        "sport_key_used": record.get("sport_key", "football"),
+        "home_team": record.get("home_team", "Home"),
+        "away_team": record.get("away_team", "Away"),
+        "commence_time": record.get("commence_time"),
+    }
+
+
+def record_to_setup(record):
+    safe = record_combo_to_combo(record.get("safe"))
+    value = record_combo_to_combo(record.get("value"))
+    risky = record_combo_to_combo(record.get("risky"))
+    return {
+        "safe": safe,
+        "value": value,
+        "risky": risky,
+        "best_combo_score": max([
+            int((safe or {}).get("score", 0) or 0),
+            int((value or {}).get("score", 0) or 0),
+            int((risky or {}).get("score", 0) or 0),
+        ]),
+    }
+
+
+def store_qualifying_fixture(event, setup, assessed_score, source="scan"):
+    store = load_fixture_store()
+    key = fixture_store_key(event)
+    existing = store["fixtures"].get(key, {})
+    pick = choose_bot_pick(setup)
+    record = {
+        **existing,
+        "key": key,
+        "source": source,
+        "sport_key": event.get("sport_key_used", event.get("sport_key", "football")),
+        "home_team": event.get("home_team", "Home"),
+        "away_team": event.get("away_team", "Away"),
+        "commence_time": event.get("commence_time"),
+        "assessment_score": assessed_score,
+        "safe": serialise_combo(setup.get("safe")),
+        "value": serialise_combo(setup.get("value")),
+        "risky": serialise_combo(setup.get("risky")),
+        "bot_pick_label": (pick or {}).get("label"),
+        "updated_at": now_utc().isoformat(),
+        "preview_sent": existing.get("preview_sent", False),
+        "final_call_sent": existing.get("final_call_sent", False),
+        "bets_closed_sent": existing.get("bets_closed_sent", False),
+    }
+    store["fixtures"][key] = record
+    save_fixture_store(store)
+    return record
+
+
+def build_and_store_fixtures(target_date, source="scan"):
+    events, errors = fetch_football_odds(target_date, FOOTBALL_SPORT_KEYS)
+    rows = []
+    for event in events:
+        scored = score_football_event(event)
+        if not scored:
+            continue
+        setup = select_best_setup(scored)
+        assessed_score = fixture_assessment_score(scored, setup)
+        if assessed_score < get_score_threshold():
+            continue
+        record = store_qualifying_fixture(event, setup, assessed_score, source=source)
+        rows.append({"event": event, "setup": setup, "score": assessed_score, "record": record, "pick": choose_bot_pick(setup)})
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    return rows, events, errors
+
+
+def build_tomorrow_preview_message_stored():
+    target_date = london_tomorrow()
+    rows, events, errors = build_and_store_fixtures(target_date, source="tomorrow_preview")
+    lines = [
+        "📚 <b>THE BLACK BOOK</b>",
+        "🌙 <b>TOMORROW'S PREVIEW</b>",
+        "",
+        f"📅 Date: <b>{scan_date_label(target_date)}</b>",
+        f"Fixtures checked: <b>{len(events)}</b>",
+        f"Qualifying setups: <b>{len(rows)}</b>",
+        "",
+    ]
+    if not rows:
+        lines.append("No qualifying setups found for tomorrow yet.")
+    else:
+        lines.append("🔥 <b>Top Setups</b>\n")
+        for index, row in enumerate(rows[:PREVIEW_POST_LIMIT], start=1):
+            event = row["event"]
+            home = event.get("home_team", "Home")
+            away = event.get("away_team", "Away")
+            pick = row.get("pick")
+            pick_text = "None"
+            if pick:
+                pick_text = f"{pick['label']} — {compact_legs(pick['combo']['leg_names'])}"
+            lines.append(
+                f"<b>{index}. {fixture_display(home, away)}</b>\n"
+                f"🔥 Fixture: <b>{row['score']}/100</b>\n"
+                f"🎯 {pick_text}\n"
+            )
+    if errors:
+        lines.append("<b>API notes:</b>")
+        for err in errors[:4]:
+            lines.append(f"• {err}")
+    lines.extend([
+        "━━━━━━━━━━━━━━",
+        "Full accas posted in ⚽ Football Accas.",
+        "Final Call and Bets Closed alerts are scheduled from saved fixtures.",
+        "📚 The Black Book",
+        "Find The Edge.",
+    ])
+    return "\n".join(lines), rows
+
+
+def run_tomorrow_preview_stable():
+    message, rows = build_tomorrow_preview_message_stored()
+    send_to_football_topic(message)
+    acca_msg = build_daily_acca_message(target_date=london_tomorrow(), sport_keys=FOOTBALL_SPORT_KEYS, league_key="all")
+    send_to_football_accas_topic(acca_msg)
+    store = load_fixture_store()
+    for row in rows:
+        key = row["record"]["key"]
+        if key in store["fixtures"]:
+            store["fixtures"][key]["preview_sent"] = True
+            store["fixtures"][key]["preview_sent_at"] = now_utc().isoformat()
+    save_fixture_store(store)
+    return {"ok": True, "task": "tomorrow_preview", "saved": len(rows)}
+
+
+def run_matchday_update_stable():
+    rows, events, errors = build_and_store_fixtures(london_today(), source="matchday_update")
+    send_to_football_topic(build_matchday_update_message())
+    return {"ok": True, "task": "matchday_update", "saved": len(rows), "fixtures_checked": len(events)}
+
+
+def minutes_until_record_kickoff(record):
+    kickoff = parse_event_datetime(record.get("commence_time"))
+    if not kickoff:
+        return None
+    now_london = now_utc().astimezone(ZoneInfo("Europe/London"))
+    kickoff_london = kickoff.astimezone(ZoneInfo("Europe/London"))
+    return (kickoff_london - now_london).total_seconds() / 60
+
+
+def run_stored_fixture_alerts():
+    store = load_fixture_store()
+    sent_final = 0
+    sent_closed = 0
+    checked = 0
+    for key, record in list(store.get("fixtures", {}).items()):
+        mins = minutes_until_record_kickoff(record)
+        if mins is None or mins < -180:
+            continue
+        checked += 1
+        event = record_to_event(record)
+        setup = record_to_setup(record)
+        score = int(record.get("assessment_score", 0) or 0)
+        final_lower = FINAL_CALL_MINUTES_BEFORE - FINAL_CALL_WINDOW_MINUTES
+        final_upper = FINAL_CALL_MINUTES_BEFORE + FINAL_CALL_WINDOW_MINUTES
+        if not record.get("final_call_sent") and final_lower <= mins <= final_upper:
+            send_to_football_topic(build_final_call_message(event, setup, score))
+            record["final_call_sent"] = True
+            record["final_call_sent_at"] = now_utc().isoformat()
+            sent_final += 1
+        if not record.get("bets_closed_sent") and -BETS_CLOSED_WINDOW_MINUTES <= mins <= BETS_CLOSED_WINDOW_MINUTES:
+            send_to_football_topic(build_bets_closed_message(event, setup))
+            record["bets_closed_sent"] = True
+            record["bets_closed_sent_at"] = now_utc().isoformat()
+            sent_closed += 1
+        store["fixtures"][key] = record
+    save_fixture_store(store)
+    return {"ok": True, "task": "stored_alerts", "checked": checked, "final_call_sent": sent_final, "bets_closed_sent": sent_closed}
+
+
+def build_fixture_store_status_message():
+    store = load_fixture_store()
+    fixtures = list(store.get("fixtures", {}).values())
+    active = []
+    for record in fixtures:
+        mins = minutes_until_record_kickoff(record)
+        if mins is not None and mins > -180:
+            active.append((mins, record))
+    active.sort(key=lambda item: item[0])
+    lines = [
+        "📦 <b>THE BLACK BOOK FIXTURE STORE</b>",
+        "",
+        f"Saved fixtures: <b>{len(fixtures)}</b>",
+        f"Active fixtures: <b>{len(active)}</b>",
+        "",
+    ]
+    for mins, record in active[:8]:
+        home = record.get("home_team", "Home")
+        away = record.get("away_team", "Away")
+        status = []
+        status.append("Final ✅" if record.get("final_call_sent") else "Final ❌")
+        status.append("Closed ✅" if record.get("bets_closed_sent") else "Closed ❌")
+        lines.append(
+            f"<b>{fixture_display(home, away)}</b>\n"
+            f"KO in: <b>{int(mins)} mins</b>\n"
+            f"{' | '.join(status)}\n"
+        )
+    if not active:
+        lines.append("No active stored fixtures.")
+    return "\n".join(lines)
+
+
 # =========================
 # Flask routes
 # =========================
@@ -2538,20 +2879,27 @@ def delete_webhook():
 @app.route("/scheduled-scan", methods=["GET", "POST"])
 def scheduled_scan():
     task = request.args.get("task", "").strip().lower()
-    if task == "alerts":
-        return jsonify(run_alert_automation())
-    if task == "final_call":
-        return jsonify({"ok": True, "task": "final_call", **run_final_call_alerts()})
-    if task == "bets_closed":
-        return jsonify({"ok": True, "task": "bets_closed", **run_bets_closed_alerts()})
-    if task == "tomorrow_preview":
-        run_tomorrow_preview()
-        return jsonify({"ok": True, "task": "tomorrow_preview"})
-    if task == "matchday_update":
-        run_matchday_update()
-        return jsonify({"ok": True, "task": "matchday_update"})
-    result = run_football_scan(post_to_topic=True)
 
+    if task == "tomorrow_preview":
+        return jsonify(run_tomorrow_preview_stable())
+
+    if task == "matchday_update":
+        return jsonify(run_matchday_update_stable())
+
+    if task == "morning":
+        return jsonify(run_morning_message())
+
+    if task == "version_update":
+        return jsonify(send_version_update_once(force=False))
+
+    if task == "version_update_force":
+        return jsonify(send_version_update_once(force=True))
+
+    # Saved-fixture check only. This does not call The Odds API.
+    if task in ("alerts", "stored_alerts"):
+        return jsonify(run_stored_fixture_alerts())
+
+    result = run_football_scan(post_to_topic=True)
     return jsonify({
         "ok": True,
         "version": VERSION,
@@ -2635,6 +2983,21 @@ def telegram_webhook():
 
         if lower_text.startswith("/start"):
             reply = build_start_message()
+
+        restricted_prefixes = (
+            "/score ",
+            "/settings",
+            "/chatid",
+            "/setchat",
+            "/settopic",
+            "/routes",
+                    "/versionupdate",
+                    "/morning",
+                    "/storage",
+        )
+        if lower_text.startswith(restricted_prefixes) and not is_admin_update(update):
+            tg_response = admin_only_reply(chat_id, thread_id=thread_id)
+            return jsonify({"ok": True, "telegram": tg_response})
             tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/version"):
@@ -2714,19 +3077,37 @@ def telegram_webhook():
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/tomorrowpreview"):
-            run_tomorrow_preview()
-            tg_response = send_telegram_message(chat_id, "🌙 Tomorrow preview sent.", thread_id=thread_id)
+            result = run_tomorrow_preview_stable()
+            tg_response = send_telegram_message(chat_id, f"🌙 Tomorrow preview sent. Saved: {result.get('saved', 0)}", thread_id=thread_id)
 
         elif lower_text.startswith("/matchdayupdate"):
-            run_matchday_update()
-            tg_response = send_telegram_message(chat_id, "🕛 Match day update sent.", thread_id=thread_id)
+            result = run_matchday_update_stable()
+            tg_response = send_telegram_message(chat_id, f"🕛 Match day update sent. Saved: {result.get('saved', 0)}", thread_id=thread_id)
+
+        elif lower_text.startswith("/versionupdate"):
+            send_version_update_once(force=True)
+            tg_response = send_telegram_message(chat_id, "📢 Version update sent.", thread_id=thread_id)
+
+        elif lower_text.startswith("/morning"):
+            run_morning_message()
+            tg_response = send_telegram_message(chat_id, "☀️ Morning message sent.", thread_id=thread_id)
+
+        elif lower_text.startswith("/welcome"):
+            tg_response = send_to_members_chat(build_member_welcome_message("everyone"))
+
+        elif lower_text.startswith("/storage"):
+            tg_response = send_telegram_message(chat_id, build_storage_status_message(), thread_id=thread_id)
+
+        elif lower_text.startswith("/fixturestore"):
+            tg_response = send_telegram_message(chat_id, build_fixture_store_status_message(), thread_id=thread_id)
 
         elif lower_text.startswith("/alerts"):
-            result = run_alert_automation()
+            result = run_stored_fixture_alerts()
             reply = (
                 "🚨 <b>Alert automation checked.</b>\n\n"
-                f"Final Call sent: <b>{result['final_call']['sent']}</b>\n"
-                f"Bets Closed sent: <b>{result['bets_closed']['sent']}</b>"
+                f"Final Call sent: <b>{result.get('final_call_sent', 0)}</b>\n"
+                f"Bets Closed sent: <b>{result.get('bets_closed_sent', 0)}</b>\n"
+                f"Stored fixtures checked: <b>{result.get('checked', 0)}</b>"
             )
             tg_response = send_telegram_message(chat_id, reply, thread_id=thread_id)
 
@@ -2785,3 +3166,224 @@ def telegram_webhook():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port, debug=False)
+
+
+# =========================
+# v3.10 Premium auto routine + member messages
+# =========================
+
+def send_to_members_chat(text: str):
+    return send_telegram_message(
+        FOOTBALL_CHAT_ID,
+        text,
+        thread_id=MEMBERS_CHAT_TOPIC_ID,
+    )
+
+
+def version_label():
+    return VERSION.replace("the-black-book-", "").replace("-", " ")
+
+
+def load_json_file(path_value, fallback):
+    try:
+        path = Path(path_value)
+        if not path.exists():
+            return fallback
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return fallback
+
+
+def save_json_file(path_value, data):
+    try:
+        path = Path(path_value)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def build_version_update_message():
+    return (
+        "📢 <b>THE BLACK BOOK UPDATE</b>\n\n"
+        "The group has been upgraded to make the service clearer and easier to follow.\n\n"
+        "✅ <b>What members will notice</b>\n"
+        "• Automatic morning updates at 07:30 UK\n"
+        "• New members are welcomed in Members chat\n"
+        "• Cleaner routine around picks, accas and alerts\n"
+        "• Final Call and Bets Closed use saved fixtures\n"
+        "• The 5-minute alert check does not use extra odds scans\n\n"
+        "📌 <b>Data note</b>\n"
+        f"{LOCAL_DATA_NOTICE}\n\n"
+        f"📚 <b>{version_label()}</b>\n"
+        "Find The Edge."
+    )
+
+
+def send_version_update_once(force=False):
+    state = load_json_file(RELEASE_NOTES_FILE, {})
+    if not force and state.get("last_version_update") == VERSION:
+        return {"ok": True, "sent": False, "reason": "already_sent", "version": VERSION}
+    send_to_members_chat(build_version_update_message())
+    state["last_version_update"] = VERSION
+    state["last_version_update_at"] = now_utc().isoformat()
+    save_json_file(RELEASE_NOTES_FILE, state)
+    return {"ok": True, "sent": True, "version": VERSION}
+
+
+def build_member_welcome_message(member_name="new member"):
+    safe_name = str(member_name or "new member").strip()
+    return (
+        f"👋 <b>Welcome {safe_name}</b>\n\n"
+        "You’re now inside <b>The Black Book</b>.\n\n"
+        "Use the topics to keep everything clear:\n\n"
+        "⚽ <b>Football SVR</b>\nOfficial daily football picks.\n\n"
+        "⚽ <b>Football Accas</b>\nDaily Safe, Value and Risky accas.\n\n"
+        "💰 <b>Football Results</b>\nResults and track record.\n\n"
+        "💬 <b>Members chat</b>\nTalk through the bets with everyone.\n\n"
+        "📚 The Black Book\n"
+        "Find The Edge."
+    )
+
+
+def handle_new_members(update):
+    message = update.get("message") or {}
+    new_members = message.get("new_chat_members") or []
+    if not new_members:
+        return None
+    sent = 0
+    for member in new_members:
+        if member.get("is_bot"):
+            continue
+        name = member.get("first_name") or member.get("username") or "new member"
+        send_to_members_chat(build_member_welcome_message(name))
+        sent += 1
+    return {"ok": True, "new_members_welcomed": sent}
+
+
+def build_morning_message():
+    # Saved-fixtures only. No Odds API call here.
+    store = load_fixture_store() if "load_fixture_store" in globals() else {"fixtures": {}}
+    today = london_today()
+    active_today = []
+    for record in store.get("fixtures", {}).values():
+        kickoff = parse_event_datetime(record.get("commence_time"))
+        if kickoff and kickoff.astimezone(ZoneInfo("Europe/London")).date() == today:
+            active_today.append(record)
+    active_today.sort(key=lambda r: parse_event_datetime(r.get("commence_time")) or now_utc())
+    safe = sum(1 for r in active_today if (r.get("bot_pick") or {}).get("key") == "safe")
+    value = sum(1 for r in active_today if (r.get("bot_pick") or {}).get("key") == "value")
+    risky = sum(1 for r in active_today if (r.get("bot_pick") or {}).get("key") == "risky")
+    top = sorted(active_today, key=lambda r: int(r.get("assessment_score", 0) or 0), reverse=True)[0] if active_today else None
+    lines = [
+        "☀️ <b>GOOD MORNING</b>",
+        "",
+        "📚 <b>THE BLACK BOOK</b>",
+        "",
+        "Today’s card is ready to follow.",
+        "",
+        f"⚽ Official Picks: <b>{len(active_today)}</b>",
+        f"🟢 Safe: <b>{safe}</b>",
+        f"🟡 Value: <b>{value}</b>",
+        f"🔴 Risky: <b>{risky}</b>",
+    ]
+    if top:
+        pick = top.get("bot_pick") or {}
+        combo = pick.get("combo") or {}
+        lines.extend([
+            "",
+            "🔥 <b>Highest Rated</b>",
+            f"{fixture_display(top.get('home_team', 'Home'), top.get('away_team', 'Away'))}",
+            f"{pick.get('label', 'Official Pick')}",
+            f"{compact_legs(combo.get('leg_names', []))}",
+            f"Score: <b>{top.get('assessment_score', 0)}/100</b>",
+        ])
+    lines.extend([
+        "",
+        "Official picks are in ⚽ Football SVR.",
+        "Accas are in ⚽ Football Accas.",
+        "",
+        "📚 The Black Book",
+        "Find The Edge.",
+    ])
+    return "\n".join(lines)
+
+
+def run_morning_message():
+    send_to_members_chat(build_morning_message())
+    return {"ok": True, "task": "morning", "time": f"{MORNING_UPDATE_HOUR:02d}:{MORNING_UPDATE_MINUTE:02d}"}
+
+
+def build_storage_status_message():
+    store = load_fixture_store() if "load_fixture_store" in globals() else {"fixtures": {}}
+    return (
+        "💾 <b>THE BLACK BOOK STORAGE</b>\n\n"
+        f"Saved fixtures: <b>{len(store.get('fixtures', {}))}</b>\n"
+        f"Current version: <b>{version_label()}</b>\n\n"
+        "📌 <b>Current setup</b>\n"
+        f"{LOCAL_DATA_NOTICE}\n\n"
+        "Permanent Render disk storage can be added later so fixtures, alerts and future stats persist through updates."
+    )
+
+
+def scheduler_state_key(name, dt):
+    return f"{name}|{dt.astimezone(ZoneInfo('Europe/London')).date().isoformat()}"
+
+
+def already_ran_scheduler(name, dt):
+    state = load_json_file(SCHEDULER_STATE_FILE, {})
+    return bool(state.get(scheduler_state_key(name, dt)))
+
+
+def mark_scheduler_ran(name, dt):
+    state = load_json_file(SCHEDULER_STATE_FILE, {})
+    state[scheduler_state_key(name, dt)] = now_utc().isoformat()
+    save_json_file(SCHEDULER_STATE_FILE, state)
+
+
+def scheduler_tick():
+    london_now = now_utc().astimezone(ZoneInfo("Europe/London"))
+    minute = london_now.minute
+
+    # 07:30 UK morning message, saved fixtures only.
+    if london_now.hour == MORNING_UPDATE_HOUR and minute == MORNING_UPDATE_MINUTE:
+        if not already_ran_scheduler("morning", london_now):
+            run_morning_message()
+            mark_scheduler_ran("morning", london_now)
+
+    # 12:00 UK match day update, uses Odds API once.
+    if london_now.hour == 12 and minute == 0:
+        if not already_ran_scheduler("matchday_update", london_now):
+            run_matchday_update_stable()
+            mark_scheduler_ran("matchday_update", london_now)
+
+    # 20:00 UK tomorrow preview + accas, uses Odds API once.
+    if london_now.hour == 20 and minute == 0:
+        if not already_ran_scheduler("tomorrow_preview", london_now):
+            run_tomorrow_preview_stable()
+            mark_scheduler_ran("tomorrow_preview", london_now)
+
+    # Every 5 mins: saved fixture alert check only. No Odds API call.
+    if minute % 5 == 0:
+        run_stored_fixture_alerts()
+
+
+def scheduler_loop():
+    # Small delay so Flask starts first.
+    time.sleep(5)
+    while True:
+        try:
+            scheduler_tick()
+        except Exception as exc:
+            print(f"Scheduler error: {exc}")
+        time.sleep(60)
+
+
+def start_internal_scheduler():
+    if not ENABLE_INTERNAL_SCHEDULER:
+        return
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        return
+    thread = threading.Thread(target=scheduler_loop, daemon=True)
+    thread.start()
+
