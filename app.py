@@ -24,7 +24,7 @@ BOT_TOKEN = (
 
 ODDS_API_KEY = os.environ.get("THE_ODDS_API_KEY", "").strip()
 
-VERSION = "the-black-book-v0.3.10.1-member-chat-fix"
+VERSION = "the-black-book-v0.3.10.2-help-override-fix"
 
 ADMIN_USER_IDS = {
     x.strip()
@@ -55,35 +55,6 @@ def admin_only_reply(chat_id, thread_id=None):
     )
 
 
-def build_help_message():
-    return (
-        "📚 <b>THE BLACK BOOK HELP</b>\n\n"
-        "⚽ <b>Football</b>\n"
-        "/scanfootball - Scan football fixtures\n"
-        "/previewfootball - Preview football fixtures\n"
-        "/tomorrowpreview - Send tomorrow's SVR + acca preview\n"
-        "/matchdayupdate - Send match day update\n"
-        "/dailyacca - Generate football accas\n\n"
-        "🚨 <b>Alerts</b>\n"
-        "/alerts - Run Final Call / Bets Closed check\n"
-        "/alertstatus - View alert automation status\n/fixturestore - View saved fixture alert status\n/storage - View storage status <i>(admin)</i>\n\n"
-        "⚙️ <b>Settings</b>\n"
-        "/score - View current post score\n"
-        "/score 60 - Change post score <i>(admin)</i>\n"
-        "/settings - Show scanner settings\n\n"
-        "📊 <b>Data / Setup</b>\n"
-        "/marketsfootball - Test available Odds API markets\n"
-        "/leagues - Show league filters\n"
-        "/sports - Show available soccer sport keys\n"
-        "/chatid - Show current chat/topic ID <i>(admin)</i>\n\n"
-        "📢 <b>Member Messages</b>\n/welcome - Post new member guide\n\n🚧 <b>Coming Soon</b>\n"
-        "• Automated Results\n"
-        "• Win/Loss Tracking\n"
-        "• Member Follow Buttons\n"
-        "• Football Specials\n\n"
-        "📚 <b>THE BLACK BOOK v3.10</b>\n"
-        "Find The Edge."
-    )
 
 
 
@@ -2310,6 +2281,43 @@ def build_alert_status_message():
     )
 
 
+
+def build_help_message():
+    return (
+        "📚 <b>THE BLACK BOOK HELP</b>\n\n"
+        "👤 <b>Members</b>\n"
+        "/start - Show welcome guide\n"
+        "/help - Show this help menu\n"
+        "/welcome - Post the member guide in Members chat\n\n"
+        "⚽ <b>Football</b>\n"
+        "/scanfootball - Scan football fixtures\n"
+        "/previewfootball - Preview football fixtures\n"
+        "/showallfootball - Show selected date fixture scores\n"
+        "/tomorrowpreview - Send tomorrow’s SVR + acca preview\n"
+        "/matchdayupdate - Send match day update\n"
+        "/dailyacca - Generate daily accas\n\n"
+        "🚨 <b>Alerts</b>\n"
+        "/alerts - Run Final Call / Bets Closed check\n"
+        "/alertstatus - View alert status\n"
+        "/fixturestore - View saved fixture status\n\n"
+        "⚙️ <b>Admin</b>\n"
+        "/score - View post score\n"
+        "/score 70 - Change post score\n"
+        "/settings - Show settings\n"
+        "/chatid - Show chat/topic ID\n"
+        "/storage - Show storage status\n"
+        "/versionupdate - Post member update\n"
+        "/morning - Test morning message\n\n"
+        "📌 <b>Automatic Routine</b>\n"
+        "07:30 UK - Morning message\n"
+        "12:00 UK - Match day update\n"
+        "20:00 UK - Tomorrow preview + accas\n"
+        "Every 5 mins - Saved-fixture alert check\n\n"
+        "📚 <b>THE BLACK BOOK v3.10.2</b>\n"
+        "Find The Edge."
+    )
+
+
 # =========================
 # Bot messages
 # =========================
@@ -2336,27 +2344,6 @@ def build_start_message():
     )
 
 
-def build_help_message():
-    return (
-        "📖 <b>THE BLACK BOOK HELP</b>\n\n"
-        "<b>Football</b>\n"
-        "• /scanfootball - Scan football and post qualifying setups\n"
-        "• /previewfootball - Show assessed fixtures and candidate combos\n"
-        "• /showallfootball - Show selected date fixture scores\n• /dailyacca 20.06.26 - Safe/Value/Risky daily accas\n\n"
-        "<b>Controls</b>\n"
-        "• /score - Show current post score\n"
-        "• /score 60 - Lower/raise post threshold\n"
-        "• /settings - Show active settings\n\n"
-        "<b>Data</b>\n"
-        "• /marketsfootball - Test which bet-builder markets are available\n"
-        "• /leagues - Show league filters\n• /sports - Show available soccer sport keys\n"
-        "• /chatid - Show current chat/topic ID\n\n"
-        "<b>Demo</b>\n"
-        "• /top - Demo old SAFE / VALUE / COVER / RISKY card\n"
-        "• /risky - Demo risky setup only\n\n"
-        "<b>Posting Rule</b>\n"
-        "The bot posts only when the assessment score passes your /score threshold."
-    )
 
 
 def build_top_message():
@@ -3005,31 +2992,8 @@ def telegram_webhook():
             tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/help"):
-            reply = build_help_message()
-            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
+            tg_response = send_telegram_message(chat_id, build_help_message(), thread_id=thread_id)
 
-        elif lower_text.startswith("/top"):
-            reply = build_top_message()
-            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
-
-        elif lower_text.startswith("/risky"):
-            reply = build_risky_message()
-            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
-
-        elif lower_text.startswith("/chatid"):
-            reply = build_chatid_message(chat_id, thread_id)
-            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
-
-        elif lower_text.startswith("/previewtomorrow"):
-            target_date, _, sport_keys, league_key = parse_scan_args("tomorrow")
-            reply = build_previewfootball_message(limit=8, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
-            tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
-
-        elif lower_text.startswith("/previewfootball") or lower_text.startswith("/preview"):
-            command = text.split()[0]
-            args_text = text[len(command):].strip()
-            target_date, _, sport_keys, league_key = parse_scan_args(args_text)
-            reply = build_previewfootball_message(limit=8, target_date=target_date, sport_keys=sport_keys, league_key=league_key)
             tg_response = send_to_football_accas_topic(reply) if (lower_text.startswith("/dailyacca") or lower_text.startswith("/acca") or lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow")) else send_telegram_message(chat_id, reply, thread_id=thread_id)
 
         elif lower_text.startswith("/dailyaccatomorrow") or lower_text.startswith("/accatomorrow"):
